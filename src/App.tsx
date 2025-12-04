@@ -1,10 +1,11 @@
 import type Phaser from 'phaser';
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { IRefPhaserGame, PhaserGame } from './PhaserGame';
 import { LogPanel } from './components/LogPanel';
 
 function App() {
     const phaserRef = useRef<IRefPhaserGame | null>(null);
+    const [logOpen, setLogOpen] = useState(false);
 
     const handleSceneReady = (scene: Phaser.Scene) => {
         if (phaserRef.current) {
@@ -15,14 +16,26 @@ function App() {
     return (
         <div id="app">
             <div className="ui">
-                <h1>Robotinto explorador</h1>
                 <p>Escena base lista para Phaser + React.</p>
             </div>
-            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', width: '100%', maxWidth: '1200px' }}>
-                <div style={{ flex: '1 1 60%' }}>
+            <div className="layout">
+                <div className="game-shell">
                     <PhaserGame ref={phaserRef} currentActiveScene={handleSceneReady} />
                 </div>
-                <div style={{ flex: '1 1 40%' }}>
+            </div>
+            <button className="log-toggle" onClick={() => setLogOpen(true)}>
+                Ver registro
+            </button>
+
+            <div className={`log-modal ${logOpen ? 'open' : ''}`} aria-hidden={!logOpen}>
+                <div className="log-modal__backdrop" onClick={() => setLogOpen(false)} />
+                <div className="log-modal__panel">
+                    <div className="log-modal__header">
+                        <h3>Registro de misión</h3>
+                        <button className="log-modal__close" onClick={() => setLogOpen(false)}>
+                            ×
+                        </button>
+                    </div>
                     <LogPanel />
                 </div>
             </div>

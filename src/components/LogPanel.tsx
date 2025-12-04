@@ -17,7 +17,7 @@ export function LogPanel() {
     }, []);
 
     return (
-        <div className="retro-log" style={{ height: '260px', overflowY: 'auto' }}>
+        <div className="retro-log">
             {lines.map((line, idx) => (
                 <div key={`${idx}-${line.slice(0, 10)}`}>{line}</div>
             ))}

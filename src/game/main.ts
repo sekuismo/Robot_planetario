@@ -1,5 +1,6 @@
 import Phaser, { Game } from 'phaser';
 import { RobotintoScene } from './scenes/RobotintoScene';
+import { StartScene } from './scenes/StartScene';
 
 //  Find out more information about the Game Config at:
 //  https://newdocs.phaser.io/docs/3.70.0/Phaser.Types.Core.GameConfig
@@ -13,7 +14,7 @@ const config: Phaser.Types.Core.GameConfig = {
     },
     parent: 'game-container',
     backgroundColor: '#0f2d0f',
-    scene: [RobotintoScene]
+    scene: [StartScene, RobotintoScene]
 };
 
 const StartGame = (parent: string) => {

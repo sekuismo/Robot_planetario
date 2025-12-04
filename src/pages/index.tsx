@@ -11,8 +11,8 @@ export default function Home() {
     return (
         <>
             <Head>
-                <title>Robotinto explorador</title>
-                <meta name="description" content="Robotinto explorador: prototipo Phaser + Next.js con una escena principal lista para extender." />
+                <title>Robotinto</title>
+                <meta name="description" content="Robotinto: prototipo Phaser + Next.js con una escena principal lista para extender." />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link rel="icon" href="/favicon.png" />
             </Head>
