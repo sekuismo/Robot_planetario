@@ -14,7 +14,7 @@ export class RobotintoScene extends Scene {
     private knowledge: KnowledgeState = createInitialKnowledgeState();
     private planetBg?: Phaser.GameObjects.Image;
     private robot?: Phaser.GameObjects.Sprite;
-    private planetGridObjects: Phaser.GameObjects.GameObject[] = [];
+    private planetGridObjects: Array<Phaser.GameObjects.Image | Phaser.GameObjects.Text> = [];
     private hudLines: string[] = [];
     private hudTexts: Phaser.GameObjects.Text[] = [];
     private planetLabel?: Phaser.GameObjects.Text;
@@ -23,8 +23,16 @@ export class RobotintoScene extends Scene {
     private statusText?: Phaser.GameObjects.Text;
     private isTraveling = false;
     private exploringTween?: Phaser.Tweens.Tween;
+    private travelTween?: Phaser.Tweens.Tween;
     private robotBaseY = 0;
     private pendingBgLoads: Partial<Record<PlanetId, Array<() => void>>> = {};
+    private travelBg?: Phaser.GameObjects.Image;
+    private mothership?: Phaser.GameObjects.Image;
+    private mothershipThrust?: Phaser.GameObjects.Image;
+    private travelStars?: Phaser.GameObjects.Particles.ParticleEmitter;
+    private starEmitter?: Phaser.GameObjects.Particles.ParticleEmitter;
+    private explorationPulse?: Phaser.GameObjects.Arc;
+    private explorationPulseTween?: Phaser.Tweens.Tween;
     private log(message: string): void {
         console.log(message);
         EventBus.emit('log-line', message);
@@ -47,6 +55,11 @@ export class RobotintoScene extends Scene {
         this.load.image('planet-URANUS', 'assets/main%20screen/planets/urano.png');
         this.load.image('planet-NEPTUNE', 'assets/main%20screen/planets/neptuno.png');
 
+        this.load.image('travel-bg', 'assets/viaje/fondo_nave_nodriza.png');
+        this.load.image('mothership', 'assets/viaje/nave_nodriza.png');
+        this.load.image('mothership-thrust', 'assets/viaje/nave_nodriza_propulsion.png');
+        this.load.image('travel-star', 'assets/star.png');
+
         this.load.image('robot-normal', 'assets/robotinto/robotinto_normal.png');
         this.load.image('robot-moving', 'assets/robotinto/robotinto_movimiento.png');
         this.load.image('robot-burn', 'assets/robotinto/robotinto_quemado.png');
@@ -68,11 +81,13 @@ export class RobotintoScene extends Scene {
         this.planetBg = this.add.image(this.scale.width / 2, this.scale.height / 2, 'main-bg');
         this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
         this.planetBg.setVisible(false);
+        this.createTravelLayer();
 
         this.robotBaseY = this.scale.height * 0.7;
         this.robot = this.add.sprite(this.scale.width / 2, this.robotBaseY, 'robot-normal');
         this.robot.setScale(0.5);
         this.robot.setVisible(false);
+        this.robot.setDepth(9);
         if (!this.anims.exists('robot-exploring')) {
             this.anims.create({
                 key: 'robot-exploring',
@@ -85,6 +100,7 @@ export class RobotintoScene extends Scene {
         this.createStatusOverlay();
         this.createHUD();
         this.createPlanetGrid();
+        this.createExplorationCue();
 
         EventBus.emit('current-scene-ready', this);
         EventBus.emit('robotinto-ready');
@@ -94,6 +110,7 @@ export class RobotintoScene extends Scene {
 
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             EventBus.removeListener('start-mission', startHandler);
+            this.stopTravelAnimation();
         });
     }
 
@@ -177,9 +194,11 @@ export class RobotintoScene extends Scene {
                 this.planetBg.setVisible(true);
             }
 
+            const shouldFly = !planet.hasSurface; // Volando solo en planetas sin superficie/atmósfera
             this.setRobotState('moving');
             this.showTravelTransition(() => {
-                this.setRobotState('exploring');
+                this.setRobotState(shouldFly ? 'exploring' : 'normal');
+                this.playExplorationIntro(planet);
                 const exploringDuration = 2000;
                 this.showStatusMessage('Explorando', exploringDuration);
                 this.time.delayedCall(exploringDuration, () => {
@@ -285,7 +304,7 @@ export class RobotintoScene extends Scene {
     }
 
     private showTravelTransition(onComplete: () => void) {
-        this.showStatusMessage('Viajando', 300, onComplete);
+        this.startTravelAnimation(3200, onComplete);
     }
 
     private showStatusMessage(message: string, visibleMs = 300, onComplete?: () => void) {
@@ -426,6 +445,196 @@ export class RobotintoScene extends Scene {
             const idx = this.hudLines.length - this.hudTexts.length + i;
             this.hudTexts[i].setText(idx >= 0 ? this.hudLines[idx] : '');
         }
+    }
+
+    private createExplorationCue() {
+        this.explorationPulse = this.add.circle(0, 0, 90, 0x9ef78a, 0.18);
+        this.explorationPulse.setStrokeStyle(3, 0xb6ff9b, 0.9);
+        this.explorationPulse.setVisible(false).setDepth(8);
+    }
+
+    private playExplorationIntro(planet: Planet) {
+        this.log(`Exploracion iniciada en ${planet.name}`);
+        if (!this.robot) {
+            return;
+        }
+
+        if (this.explorationPulse) {
+            this.explorationPulseTween?.stop();
+            this.explorationPulse.setPosition(this.robot.x, this.robot.y);
+            this.explorationPulse.setScale(0.55);
+            this.explorationPulse.setAlpha(0.95);
+            this.explorationPulse.setVisible(true);
+
+            this.explorationPulseTween = this.tweens.add({
+                targets: this.explorationPulse,
+                scale: { from: 0.55, to: 1.4 },
+                alpha: { from: 0.95, to: 0 },
+                duration: 620,
+                ease: 'Cubic.Out',
+                onComplete: () => this.explorationPulse?.setVisible(false)
+            });
+        }
+
+        const baseScale = this.robot.scaleX;
+        this.tweens.add({
+            targets: this.robot,
+            scaleX: { from: baseScale, to: baseScale + 0.04 },
+            scaleY: { from: baseScale, to: baseScale + 0.04 },
+            duration: 240,
+            yoyo: true,
+            ease: 'Sine.easeInOut'
+        });
+    }
+
+    private createTravelLayer() {
+        const { width, height } = this.scale;
+        this.travelBg = this.add.image(width / 2, height / 2, 'travel-bg');
+        this.travelBg.setDisplaySize(width, height);
+        this.travelBg.setDepth(15);
+        this.travelBg.setVisible(false);
+        this.travelBg.setAlpha(0);
+
+        this.mothership = this.add.image(0, 0, 'mothership');
+        this.mothership.setDepth(17);
+        this.mothership.setVisible(false);
+        this.mothership.setAlpha(0);
+        this.mothership.setScale(0.25);
+
+        this.mothershipThrust = this.add.image(0, 0, 'mothership-thrust');
+        this.mothershipThrust.setDepth(16.5);
+        this.mothershipThrust.setVisible(false);
+        this.mothershipThrust.setAlpha(0);
+        this.mothershipThrust.setScale(0.25);
+
+        const starConfig: Phaser.Types.GameObjects.Particles.ParticleEmitterConfig = {
+            x: { min: 0, max: width },
+            y: { min: 0, max: height },
+            speedX: { min: -420, max: -180 },
+            speedY: { min: -60, max: 60 },
+            lifespan: 1200,
+            quantity: 2,
+            frequency: 35,
+            scale: { start: 0.45, end: 0 },
+            alpha: { start: 0.9, end: 0 },
+            blendMode: 'ADD'
+        };
+
+        this.travelStars = this.add.particles({
+            key: 'travel-star',
+            config: starConfig
+        });
+        this.travelStars.setDepth(16);
+        this.travelStars.setVisible(false);
+        this.travelStars.setAlpha(0);
+        this.starEmitter = this.travelStars;
+        this.starEmitter?.stop();
+    }
+
+    private startTravelAnimation(durationMs: number, onComplete: () => void) {
+        const bg = this.travelBg;
+        const ship = this.mothership;
+        const thrust = this.mothershipThrust;
+        const stars = this.travelStars;
+        if (!bg || !ship || !thrust) {
+            onComplete();
+            return;
+        }
+
+        this.stopTravelAnimation();
+        const { width, height } = this.scale;
+
+        bg.setDisplaySize(width, height);
+        bg.setAlpha(0).setVisible(true).setAngle(0);
+        stars?.setAlpha(0).setVisible(true);
+        this.starEmitter?.start();
+        ship.setAlpha(0).setVisible(true);
+        ship.setAngle(-5);
+        const shipY = height * 0.55;
+        ship.setPosition(-width * 0.35, shipY);
+        ship.setScale(0.25);
+        thrust.setAlpha(0).setVisible(false);
+        thrust.setScale(0.25);
+
+        const syncThrust = () => {
+            thrust.setPosition(ship.x, ship.y);
+            thrust.setAngle(ship.angle);
+        };
+        syncThrust();
+
+        this.statusOverlay?.setVisible(false);
+        this.statusText?.setText('Viajando').setVisible(true).setAlpha(1).setDepth(22);
+
+        const fadeTargets = stars ? [bg, stars, ship] : [bg, ship];
+        this.tweens.add({
+            targets: fadeTargets,
+            alpha: { from: 0, to: 1 },
+            duration: 200,
+            ease: 'Sine.easeInOut'
+        });
+
+        const beginBoost = () => {
+            ship.setVisible(false); // Evita ver dos naves: solo la versión con propulsión
+            thrust.setVisible(true);
+            this.tweens.add({
+                targets: thrust,
+                alpha: { from: 0, to: 1 },
+                duration: 180,
+                ease: 'Sine.easeInOut'
+            });
+
+            this.travelTween = this.tweens.add({
+                targets: ship,
+                x: width * 1.2,
+                y: shipY,
+                angle: -5,
+                duration: durationMs * 0.55,
+                ease: 'Cubic.In',
+                onUpdate: syncThrust,
+                onComplete: () => {
+                    const fadeOutTargets = stars ? [bg, stars, thrust, ship] : [bg, thrust, ship];
+                    this.tweens.add({
+                        targets: fadeOutTargets,
+                        alpha: { from: 1, to: 0 },
+                        duration: 200,
+                        ease: 'Sine.easeInOut',
+                        onComplete: () => {
+                            this.travelTween = undefined;
+                            this.starEmitter?.stop();
+                            fadeOutTargets.forEach((obj) => obj.setVisible(false));
+                            this.statusText?.setVisible(false);
+                            onComplete();
+                        }
+                    });
+                }
+            });
+        };
+
+        this.travelTween = this.tweens.add({
+            targets: ship,
+            x: width * 0.2,
+            y: shipY,
+            angle: -5,
+            duration: durationMs * 0.45,
+            ease: 'Linear',
+            onUpdate: syncThrust,
+            onComplete: beginBoost
+        });
+    }
+
+    private stopTravelAnimation() {
+        if (this.travelTween) {
+            this.travelTween.stop();
+            this.travelTween.remove();
+            this.travelTween = undefined;
+        }
+        this.tweens.killTweensOf([this.mothership, this.mothershipThrust]);
+        this.travelBg?.setVisible(false).setAlpha(0);
+        this.starEmitter?.stop();
+        this.travelStars?.setVisible(false).setAlpha(0);
+        this.mothership?.setVisible(false).setAlpha(0);
+        this.mothershipThrust?.setVisible(false).setAlpha(0);
+        this.statusText?.setVisible(false);
     }
 
     private ensurePlanetBackground(planetId: PlanetId, onComplete: () => void) {
