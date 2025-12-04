@@ -3,7 +3,7 @@ body {
     padding: 0;
     color: rgba(255, 255, 255, 0.87);
     background-color: #000000; 
-    font-family: Arial, Helvetica, sans-serif;
+    font-family: "VT323", monospace;
 }
 
 #app {
@@ -11,8 +11,19 @@ body {
     height: 100vh;
     overflow: hidden;
     display: flex;
+    flex-direction: column;
     justify-content: center;
     align-items: center;
+    gap: 12px;
+    text-align: center;
+}
+
+.ui h1 {
+    margin: 0;
+}
+
+.ui p {
+    margin: 4px 0 0 0;
 }
 
 .spritePosition {
@@ -45,4 +56,57 @@ body {
         border: 1px solid rgba(255, 255, 255, 0.3);
         color: rgba(255, 255, 255, 0.3);
     }
+}
+
+.retro-log {
+    background-color: #0d2f0d;
+    color: #b6ff9b;
+    font-family: "VT323", monospace;
+    padding: 12px;
+    line-height: 1.4;
+    border: 1px solid #123712;
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.6);
+    border-radius: 4px;
+}
+
+.planet-selector {
+    margin-bottom: 12px;
+    text-align: left;
+}
+
+.planet-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.planet-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px;
+    background: #0b210b;
+    border: 1px solid #123712;
+    color: #b6ff9b;
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.planet-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+    border-color: #1d4f1d;
+}
+
+.planet-card img {
+    display: block;
+    width: 100px;
+    height: 100px;
+    object-fit: contain;
+    image-rendering: pixelated;
+}
+
+.planet-card span {
+    font-size: 18px;
 }
