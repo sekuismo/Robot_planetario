@@ -13,7 +13,7 @@ const config: Phaser.Types.Core.GameConfig = {
         height: 720
     },
     parent: 'game-container',
-    backgroundColor: '#0f2d0f',
+    backgroundColor: '#000000',
     scene: [StartScene, RobotintoScene]
 };
 

@@ -24,6 +24,7 @@ export class RobotintoScene extends Scene {
     private isTraveling = false;
     private exploringTween?: Phaser.Tweens.Tween;
     private robotBaseY = 0;
+    private pendingBgLoads: Partial<Record<PlanetId, Array<() => void>>> = {};
     private log(message: string): void {
         console.log(message);
         EventBus.emit('log-line', message);
@@ -46,15 +47,6 @@ export class RobotintoScene extends Scene {
         this.load.image('planet-URANUS', 'assets/main%20screen/planets/urano.png');
         this.load.image('planet-NEPTUNE', 'assets/main%20screen/planets/neptuno.png');
 
-        this.load.image('bg-MERCURY', 'assets/planets_zenital/mercurio.png');
-        this.load.image('bg-VENUS', 'assets/planets_zenital/venus.png');
-        this.load.image('bg-EARTH', 'assets/planets_zenital/tierra.png');
-        this.load.image('bg-MARS', 'assets/planets_zenital/Marte.png');
-        this.load.image('bg-JUPITER', 'assets/planets_zenital/jupiter.png');
-        this.load.image('bg-SATURN', 'assets/planets_zenital/saturno.png');
-        this.load.image('bg-URANUS', 'assets/planets_zenital/urano.png');
-        this.load.image('bg-NEPTUNE', 'assets/planets_zenital/neptuno.png');
-
         this.load.image('robot-normal', 'assets/robotinto/robotinto_normal.png');
         this.load.image('robot-moving', 'assets/robotinto/robotinto_movimiento.png');
         this.load.image('robot-burn', 'assets/robotinto/robotinto_quemado.png');
@@ -73,7 +65,7 @@ export class RobotintoScene extends Scene {
 
         const bg = this.add.image(this.scale.width / 2, this.scale.height / 2, 'main-bg');
         bg.setDisplaySize(this.scale.width, this.scale.height);
-        this.planetBg = this.add.image(this.scale.width / 2, this.scale.height / 2, 'bg-EARTH');
+        this.planetBg = this.add.image(this.scale.width / 2, this.scale.height / 2, 'main-bg');
         this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
         this.planetBg.setVisible(false);
 
@@ -95,6 +87,7 @@ export class RobotintoScene extends Scene {
         this.createPlanetGrid();
 
         EventBus.emit('current-scene-ready', this);
+        EventBus.emit('robotinto-ready');
 
         const startHandler = (planetId: PlanetId) => this.startMission(planetId);
         EventBus.on('start-mission', startHandler);
@@ -164,15 +157,11 @@ export class RobotintoScene extends Scene {
             return;
         }
 
+        this.isTraveling = true;
         this.currentGeneration += 1;
         EventBus.emit('generation-changed', this.currentGeneration);
         this.currentPlanet = planet;
         EventBus.emit('planet-changed', planet.id);
-
-        if (this.planetBg) {
-            this.planetBg.setTexture(`bg-${planet.id}`);
-            this.planetBg.setVisible(true);
-        }
 
         if (this.generationLabel) {
             this.generationLabel.setText(`Generacion: ${this.currentGeneration}`);
@@ -181,19 +170,28 @@ export class RobotintoScene extends Scene {
             this.planetLabel.setText(`Planeta: ${planet.name}`);
         }
 
-        this.setGridVisible(false);
-        this.setRobotState('moving');
-        this.isTraveling = true;
-        this.showTravelTransition(() => {
-            this.setRobotState('exploring');
-            const exploringDuration = 2000;
-            this.showStatusMessage('Explorando', exploringDuration);
-            this.time.delayedCall(exploringDuration, () => {
-                this.runMissionForPlanet(planet);
-                this.setGridVisible(true);
-                this.isTraveling = false;
+        const beginTravel = () => {
+            if (this.planetBg) {
+                this.planetBg.setTexture(`bg-${planet.id}`);
+                this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
+                this.planetBg.setVisible(true);
+            }
+
+            this.setRobotState('moving');
+            this.showTravelTransition(() => {
+                this.setRobotState('exploring');
+                const exploringDuration = 2000;
+                this.showStatusMessage('Explorando', exploringDuration);
+                this.time.delayedCall(exploringDuration, () => {
+                    this.runMissionForPlanet(planet);
+                    this.setGridVisible(true);
+                    this.isTraveling = false;
+                });
             });
-        });
+        };
+
+        this.setGridVisible(false);
+        this.ensurePlanetBackground(planet.id, beginTravel);
     }
 
     private runMissionForPlanet(planet: Planet): void {
@@ -428,5 +426,63 @@ export class RobotintoScene extends Scene {
             const idx = this.hudLines.length - this.hudTexts.length + i;
             this.hudTexts[i].setText(idx >= 0 ? this.hudLines[idx] : '');
         }
+    }
+
+    private ensurePlanetBackground(planetId: PlanetId, onComplete: () => void) {
+        const key = `bg-${planetId}`;
+        if (this.textures.exists(key)) {
+            onComplete();
+            return;
+        }
+
+        if (this.pendingBgLoads[planetId]) {
+            this.pendingBgLoads[planetId]?.push(onComplete);
+            return;
+        }
+
+        this.pendingBgLoads[planetId] = [onComplete];
+
+        const statusTargets = [this.statusOverlay, this.statusText].filter(Boolean);
+        if (statusTargets.length) {
+            this.tweens.killTweensOf(statusTargets);
+        }
+        this.statusOverlay?.setVisible(true).setAlpha(0.75);
+        this.statusText?.setText('Cargando planeta...').setVisible(true).setAlpha(1);
+
+        const path = this.getPlanetBgPath(planetId);
+        this.load.image(key, path);
+
+        this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+            this.statusOverlay?.setVisible(false);
+            this.statusText?.setVisible(false);
+
+            const callbacks = this.pendingBgLoads[planetId] ?? [];
+            delete this.pendingBgLoads[planetId];
+
+            if (!this.textures.exists(key)) {
+                console.warn(`No se pudo cargar fondo para ${planetId}`);
+                this.isTraveling = false;
+                this.setGridVisible(true);
+                return;
+            }
+
+            callbacks.forEach((cb) => cb());
+        });
+
+        this.load.start();
+    }
+
+    private getPlanetBgPath(planetId: PlanetId): string {
+        const paths: Record<PlanetId, string> = {
+            MERCURY: 'assets/planets_zenital/mercurio.png',
+            VENUS: 'assets/planets_zenital/venus.png',
+            EARTH: 'assets/planets_zenital/tierra.png',
+            MARS: 'assets/planets_zenital/Marte.png',
+            JUPITER: 'assets/planets_zenital/jupiter.png',
+            SATURN: 'assets/planets_zenital/saturno.png',
+            URANUS: 'assets/planets_zenital/urano.png',
+            NEPTUNE: 'assets/planets_zenital/neptuno.png'
+        };
+        return paths[planetId];
     }
 }

@@ -45,7 +45,15 @@ export class StartScene extends Scene {
         startButton.on('pointerout', () => startButton.setScale(1));
         startButton.on('pointerdown', () => {
             startButton.disableInteractive();
-            this.showLoading(() => this.scene.start('RobotintoScene'));
+            this.showLoading(() => {
+                EventBus.once('robotinto-ready', () => {
+                    this.scene.stop('StartScene');
+                    this.scene.bringToTop('RobotintoScene');
+                });
+
+                this.scene.launch('RobotintoScene');
+                this.scene.bringToTop();
+            });
         });
 
         this.tweens.add({
