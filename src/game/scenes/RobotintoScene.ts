@@ -29,7 +29,7 @@ export class RobotintoScene extends Scene {
     private travelBg?: Phaser.GameObjects.Image;
     private mothership?: Phaser.GameObjects.Image;
     private mothershipThrust?: Phaser.GameObjects.Image;
-    private travelStars?: Phaser.GameObjects.Particles.ParticleEmitter;
+    private travelStars?: Phaser.GameObjects.Particles.ParticleEmitterManager;
     private starEmitter?: Phaser.GameObjects.Particles.ParticleEmitter;
     private explorationPulse?: Phaser.GameObjects.Arc;
     private explorationPulseTween?: Phaser.Tweens.Tween;
@@ -520,14 +520,11 @@ export class RobotintoScene extends Scene {
             blendMode: 'ADD'
         };
 
-        this.travelStars = this.add.particles({
-            key: 'travel-star',
-            config: starConfig
-        });
+        this.travelStars = this.add.particles('travel-star');
         this.travelStars.setDepth(16);
         this.travelStars.setVisible(false);
         this.travelStars.setAlpha(0);
-        this.starEmitter = this.travelStars;
+        this.starEmitter = this.travelStars.createEmitter(starConfig);
         this.starEmitter?.stop();
     }
 
