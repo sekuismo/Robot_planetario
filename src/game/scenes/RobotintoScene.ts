@@ -15,12 +15,21 @@ export class RobotintoScene extends Scene {
     private planetBg?: Phaser.GameObjects.Image;
     private robot?: Phaser.GameObjects.Sprite;
     private planetGridObjects: Array<Phaser.GameObjects.Image | Phaser.GameObjects.Text> = [];
-    private hudLines: string[] = [];
-    private hudTexts: Phaser.GameObjects.Text[] = [];
-    private planetLabel?: Phaser.GameObjects.Text;
-    private generationLabel?: Phaser.GameObjects.Text;
     private statusOverlay?: Phaser.GameObjects.Rectangle;
     private statusText?: Phaser.GameObjects.Text;
+    private travelLoadingScreen?: Phaser.GameObjects.Image;
+    private travelLoadingText?: Phaser.GameObjects.Text;
+    private explorationStartButton?: Phaser.GameObjects.Container;
+    private awaitingExplorationStart = false;
+    private nextExplorationPlanet: Planet | null = null;
+    private nextPlanetRequiresFlight = false;
+    private returnButton?: Phaser.GameObjects.Container;
+    private rpgBox?: Phaser.GameObjects.Container;
+    private rpgBoxText?: Phaser.GameObjects.Text;
+    private rpgBoxPrompt?: Phaser.GameObjects.Text;
+    private messageQueue: string[] = [];
+    private messageCompleteCallback?: () => void;
+    private advanceKey?: Phaser.Input.Keyboard.Key;
     private isTraveling = false;
     private exploringTween?: Phaser.Tweens.Tween;
     private travelTween?: Phaser.Tweens.Tween;
@@ -36,7 +45,6 @@ export class RobotintoScene extends Scene {
     private log(message: string): void {
         console.log(message);
         EventBus.emit('log-line', message);
-        this.pushHudLine(message);
     }
 
     constructor() {
@@ -71,6 +79,7 @@ export class RobotintoScene extends Scene {
         this.load.image('robot-explore-3', 'assets/robotinto/robotinto_volador/volador_anim3.png');
         this.load.image('robot-explore-4', 'assets/robotinto/robotinto_volador/volador_anim4.png');
         this.load.image('robot-explore-5', 'assets/robotinto/robotinto_volador/volador_anim5.png');
+        this.load.image('loading-screen', 'assets/Back_loading.png');
     }
 
     create() {
@@ -82,6 +91,7 @@ export class RobotintoScene extends Scene {
         this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
         this.planetBg.setVisible(false);
         this.createTravelLayer();
+        this.createTravelLoadingOverlay();
 
         this.robotBaseY = this.scale.height * 0.7;
         this.robot = this.add.sprite(this.scale.width / 2, this.robotBaseY, 'robot-normal');
@@ -98,9 +108,12 @@ export class RobotintoScene extends Scene {
         }
 
         this.createStatusOverlay();
-        this.createHUD();
         this.createPlanetGrid();
         this.createExplorationCue();
+        this.createExplorationStartButton();
+        this.createReturnButton();
+        this.createRpgMessageBox();
+        this.registerAdvanceKey();
 
         EventBus.emit('current-scene-ready', this);
         EventBus.emit('robotinto-ready');
@@ -111,6 +124,7 @@ export class RobotintoScene extends Scene {
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             EventBus.removeListener('start-mission', startHandler);
             this.stopTravelAnimation();
+            this.advanceKey?.destroy();
         });
     }
 
@@ -164,8 +178,153 @@ export class RobotintoScene extends Scene {
         });
     }
 
+    private createExplorationStartButton() {
+        const { width, height } = this.scale;
+        const buttonWidth = 430;
+        const buttonHeight = 110;
+
+        const bg = this.add.rectangle(0, 0, buttonWidth, buttonHeight, 0x0b210b, 0.9);
+        bg.setStrokeStyle(3, 0xb6ff9b, 0.9);
+
+        const label = this.add.text(0, 0, 'Comenzar exploración', {
+            fontFamily: 'monospace',
+            fontSize: '32px',
+            color: '#b6ff9b'
+        }).setOrigin(0.5);
+
+        this.explorationStartButton = this.add.container(width / 2, height * 0.7, [bg, label]);
+        this.explorationStartButton.setSize(buttonWidth, buttonHeight);
+        this.explorationStartButton.setDepth(42);
+        this.explorationStartButton.setVisible(false).setAlpha(0);
+        this.explorationStartButton.setInteractive({ useHandCursor: true });
+        this.explorationStartButton.on('pointerover', () => this.explorationStartButton?.setScale(1.03));
+        this.explorationStartButton.on('pointerout', () => this.explorationStartButton?.setScale(1));
+        this.explorationStartButton.on('pointerdown', () => this.handleExplorationStart());
+    }
+
+    private showExplorationStartPrompt() {
+        if (!this.explorationStartButton) {
+            return;
+        }
+        this.hideTravelLoading();
+        // Mantiene la imagen de viaje/carga y superpone el CTA
+        this.explorationStartButton.setVisible(true).setAlpha(0).setScale(1);
+        this.explorationStartButton.disableInteractive();
+        this.tweens.add({
+            targets: this.explorationStartButton,
+            alpha: 1,
+            duration: 200,
+            ease: 'Sine.easeInOut',
+            onComplete: () => this.explorationStartButton?.setInteractive({ useHandCursor: true })
+        });
+    }
+
+    private hideExplorationStartPrompt() {
+        if (!this.explorationStartButton) {
+            return;
+        }
+        this.explorationStartButton.disableInteractive();
+        this.explorationStartButton.setVisible(false);
+        this.explorationStartButton.setAlpha(0);
+    }
+
+    private handleExplorationStart() {
+        if (!this.awaitingExplorationStart || !this.nextExplorationPlanet) {
+            return;
+        }
+        this.awaitingExplorationStart = false;
+        const planet = this.nextExplorationPlanet;
+        const shouldFly = this.nextPlanetRequiresFlight;
+        this.nextExplorationPlanet = null;
+        this.nextPlanetRequiresFlight = false;
+
+        if (this.explorationStartButton) {
+            this.explorationStartButton.disableInteractive();
+            this.tweens.add({
+                targets: this.explorationStartButton,
+                alpha: 0,
+                duration: 160,
+                ease: 'Sine.easeInOut',
+                onComplete: () => this.explorationStartButton?.setVisible(false)
+            });
+        }
+
+        this.hideTravelLoading(() => {
+            this.hideTravelScene(() => {
+                if (this.planetBg) {
+                    this.planetBg.setTexture(`bg-${planet.id}`);
+                    this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
+                    this.planetBg.setVisible(true);
+                }
+                this.playLandingAnimation(shouldFly, () => {
+                    this.playExplorationIntro(planet);
+                    const narrative = this.runMissionForPlanet(planet);
+                    this.showRpgMessages(narrative, () => {
+                        this.showReturnButton();
+                    });
+                });
+            });
+        });
+    }
+
+    private createReturnButton() {
+        const { width, height } = this.scale;
+        const buttonWidth = 260;
+        const buttonHeight = 72;
+
+        const bg = this.add.rectangle(0, 0, buttonWidth, buttonHeight, 0x0b210b, 0.85);
+        bg.setStrokeStyle(2, 0x123712);
+
+        const label = this.add.text(0, 0, 'Volver al mapa', {
+            fontFamily: 'monospace',
+            fontSize: '26px',
+            color: '#b6ff9b'
+        }).setOrigin(0.5);
+
+        this.returnButton = this.add.container(width / 2, height * 0.86, [bg, label]);
+        this.returnButton.setSize(buttonWidth, buttonHeight);
+        this.returnButton.setDepth(42);
+        this.returnButton.setVisible(false).setAlpha(0);
+        this.returnButton.setInteractive({ useHandCursor: true });
+        this.returnButton.on('pointerover', () => this.returnButton?.setScale(1.03));
+        this.returnButton.on('pointerout', () => this.returnButton?.setScale(1));
+        this.returnButton.on('pointerdown', () => this.returnToPlanetSelection());
+    }
+
+    private showReturnButton() {
+        if (!this.returnButton) {
+            return;
+        }
+        this.returnButton.setVisible(true).setAlpha(0).disableInteractive();
+        this.tweens.add({
+            targets: this.returnButton,
+            alpha: 1,
+            duration: 200,
+            ease: 'Sine.easeInOut',
+            onComplete: () => this.returnButton?.setInteractive({ useHandCursor: true })
+        });
+    }
+
+    private hideReturnButton() {
+        if (!this.returnButton) {
+            return;
+        }
+        this.returnButton.disableInteractive();
+        this.returnButton.setVisible(false);
+        this.returnButton.setAlpha(0);
+    }
+
+    private returnToPlanetSelection() {
+        this.hideReturnButton();
+        this.clearRpgMessages();
+        this.setGridVisible(true);
+        this.isTraveling = false;
+        this.awaitingExplorationStart = false;
+        this.currentPlanet = null;
+    }
+
     public startMission(planetId: PlanetId): void {
-        if (this.isTraveling) {
+        if (this.isTraveling || this.awaitingExplorationStart) {
             return;
         }
         const planet = PLANETS.find((p) => p.id === planetId);
@@ -175,59 +334,50 @@ export class RobotintoScene extends Scene {
         }
 
         this.isTraveling = true;
+        this.awaitingExplorationStart = false;
+        this.hideReturnButton();
+        this.clearRpgMessages();
         this.currentGeneration += 1;
         EventBus.emit('generation-changed', this.currentGeneration);
         this.currentPlanet = planet;
         EventBus.emit('planet-changed', planet.id);
 
-        if (this.generationLabel) {
-            this.generationLabel.setText(`Generacion: ${this.currentGeneration}`);
-        }
-        if (this.planetLabel) {
-            this.planetLabel.setText(`Planeta: ${planet.name}`);
-        }
-
         const beginTravel = () => {
-            if (this.planetBg) {
-                this.planetBg.setTexture(`bg-${planet.id}`);
-                this.planetBg.setDisplaySize(this.scale.width, this.scale.height);
-                this.planetBg.setVisible(true);
-            }
-
             const shouldFly = !planet.hasSurface; // Volando solo en planetas sin superficie/atmósfera
-            this.setRobotState('moving');
+            this.nextExplorationPlanet = planet;
+            this.nextPlanetRequiresFlight = shouldFly;
+            if (this.robot) {
+                this.robot.setVisible(false);
+            }
+            this.showTravelLoading(`Viajando a ${planet.name}...`);
             this.showTravelTransition(() => {
-                this.setRobotState(shouldFly ? 'exploring' : 'normal');
-                this.playExplorationIntro(planet);
-                const exploringDuration = 2000;
-                this.showStatusMessage('Explorando', exploringDuration);
-                this.time.delayedCall(exploringDuration, () => {
-                    this.runMissionForPlanet(planet);
-                    this.setGridVisible(true);
-                    this.isTraveling = false;
-                });
-            });
+                this.awaitingExplorationStart = true;
+                this.showExplorationStartPrompt();
+            }, true);
         };
 
         this.setGridVisible(false);
         this.ensurePlanetBackground(planet.id, beginTravel);
     }
 
-    private runMissionForPlanet(planet: Planet): void {
+    private runMissionForPlanet(planet: Planet): string[] {
         const sensors = {
             temperatureC: planet.temperatureC,
             radiation: planet.radiation,
             gravityG: planet.gravityG,
             humidity: planet.humidity
         };
-
-        this.showStatusMessage('Explorando', 420);
+        const narrative: string[] = [];
 
         const knowledge = this.knowledge[planet.id];
 
         this.log(`[Generacion ${this.currentGeneration}] Explorando ${planet.name}`);
         this.log(
             `Sensores => Temp: ${sensors.temperatureC}C, Rad: ${sensors.radiation}, Grav: ${sensors.gravityG}g, Hum: ${sensors.humidity}`
+        );
+        narrative.push(`Gen ${this.currentGeneration} | ${planet.name}`);
+        narrative.push(
+            `Lecturas -> Temp: ${sensors.temperatureC}C | Rad: ${sensors.radiation} | Grav: ${sensors.gravityG}g | Hum: ${sensors.humidity}%`
         );
 
         if (!planet.hasSurface) {
@@ -236,8 +386,10 @@ export class RobotintoScene extends Scene {
             knowledge.radiationThreshold = Math.max(knowledge.radiationThreshold, sensors.radiation + 20);
             this.log('Este planeta no tiene superficie solida. Protocolo extremo activado. Mision fallida.');
             this.log('Ajustando umbrales para entornos gaseosos.');
+            narrative.push('No hay superficie solida. El dron aborta la maniobra y registra la falla.');
+            narrative.push('Ajustando umbrales para futuras incursiones gaseosas.');
             this.setRobotState('broken');
-            return;
+            return narrative;
         }
 
         const protectTemp = sensors.temperatureC > knowledge.temperatureThreshold;
@@ -266,7 +418,10 @@ export class RobotintoScene extends Scene {
                 ? `Humedad detectada ${sensors.humidity} > umbral ${knowledge.humidityThreshold}. Sellando compartimentos.`
                 : 'Humedad dentro de rango seguro. Sistemas estandar activos.'
         ];
-        logsForProtection.forEach((msg) => this.log(msg));
+        logsForProtection.forEach((msg) => {
+            this.log(msg);
+            narrative.push(msg);
+        });
 
         let failureReason: string | null = null;
 
@@ -285,26 +440,129 @@ export class RobotintoScene extends Scene {
             if (failureReason === 'temperatura') {
                 knowledge.temperatureThreshold = sensors.temperatureC - 10;
                 this.setRobotState('burn');
+                narrative.push('La temperatura excede el limite y las ruedas se dañan.');
             } else if (failureReason === 'radiacion') {
                 knowledge.radiationThreshold = sensors.radiation - 5;
                 this.setRobotState('radiation');
+                narrative.push('La radiacion atraviesa los sistemas. Circuitos dañados.');
             } else if (failureReason === 'gravedad') {
                 knowledge.gravityThreshold = sensors.gravityG - 0.1;
                 this.setRobotState('broken');
+                narrative.push('La gravedad colapsa la estructura. Perdida de estabilidad.');
             } else if (failureReason === 'humedad') {
                 knowledge.humidityThreshold = sensors.humidity - 5;
                 this.setRobotState('shield');
+                narrative.push('La humedad ahoga los sensores. Sistemas en modo de emergencia.');
             }
             this.log(`Mision fallida por ${failureReason}. Ajustando umbral de ${failureReason} para la proxima generacion.`);
+            narrative.push(`Mision fallida por ${failureReason}. Umbral actualizado para la siguiente generacion.`);
         } else {
             knowledge.successes += 1;
             this.log('Mision exitosa. Conocimiento reforzado.');
+            narrative.push('Exploracion completada sin daños. Conocimiento reforzado.');
             this.setRobotState('normal');
         }
+
+        return narrative;
     }
 
-    private showTravelTransition(onComplete: () => void) {
-        this.startTravelAnimation(3200, onComplete);
+    private createRpgMessageBox() {
+        const { width, height } = this.scale;
+        const boxWidth = Math.min(900, width - 120);
+        const boxHeight = 170;
+        const boxY = height * 0.16;
+
+        const bg = this.add.rectangle(0, 0, boxWidth, boxHeight, 0x0b210b, 0.92);
+        bg.setStrokeStyle(3, 0xb6ff9b, 0.9);
+
+        const text = this.add.text(-boxWidth / 2 + 22, -boxHeight / 2 + 16, '', {
+            fontFamily: 'monospace',
+            fontSize: '26px',
+            color: '#b6ff9b',
+            wordWrap: { width: boxWidth - 44 }
+        });
+
+        const prompt = this.add.text(boxWidth / 2 - 18, boxHeight / 2 - 22, 'R - avanzar', {
+            fontFamily: 'monospace',
+            fontSize: '20px',
+            color: '#9ef78a'
+        }).setOrigin(1, 0.5);
+
+        this.rpgBox = this.add.container(width / 2, boxY, [bg, text, prompt]);
+        this.rpgBox.setDepth(41);
+        this.rpgBox.setVisible(false);
+        this.rpgBox.setAlpha(0);
+        this.rpgBoxText = text;
+        this.rpgBoxPrompt = prompt;
+    }
+
+    private registerAdvanceKey() {
+        this.advanceKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+        this.advanceKey?.on('down', () => this.advanceRpgMessage());
+    }
+
+    private showRpgMessages(messages: string[], onComplete?: () => void) {
+        if (!this.rpgBox || !this.rpgBoxText) {
+            onComplete?.();
+            return;
+        }
+
+        this.messageQueue = messages.filter((msg) => msg.trim().length > 0);
+        this.messageCompleteCallback = onComplete;
+
+        if (this.messageQueue.length === 0) {
+            onComplete?.();
+            return;
+        }
+
+        this.rpgBox.setVisible(true);
+        this.rpgBox.setAlpha(0);
+        this.rpgBoxText.setText(this.messageQueue[0]);
+
+        this.tweens.add({
+            targets: this.rpgBox,
+            alpha: 1,
+            duration: 180,
+            ease: 'Sine.easeInOut'
+        });
+    }
+
+    private advanceRpgMessage() {
+        if (this.messageQueue.length === 0) {
+            return;
+        }
+        this.messageQueue.shift();
+
+        if (this.messageQueue.length === 0) {
+            this.tweens.add({
+                targets: this.rpgBox,
+                alpha: 0,
+                duration: 150,
+                ease: 'Sine.easeInOut',
+                onComplete: () => {
+                    this.rpgBox?.setVisible(false);
+                    this.rpgBoxText?.setText('');
+                    const done = this.messageCompleteCallback;
+                    this.messageCompleteCallback = undefined;
+                    done?.();
+                }
+            });
+            return;
+        }
+
+        this.rpgBoxText?.setText(this.messageQueue[0]);
+    }
+
+    private clearRpgMessages() {
+        this.messageQueue = [];
+        this.messageCompleteCallback = undefined;
+        this.rpgBox?.setVisible(false);
+        this.rpgBox?.setAlpha(0);
+        this.rpgBoxText?.setText('');
+    }
+
+    private showTravelTransition(onComplete: () => void, holdAtEnd = false) {
+        this.startTravelAnimation(3200, onComplete, holdAtEnd);
     }
 
     private showStatusMessage(message: string, visibleMs = 300, onComplete?: () => void) {
@@ -347,6 +605,25 @@ export class RobotintoScene extends Scene {
                 visible ? (obj as Phaser.GameObjects.Image).setInteractive({ useHandCursor: true }) : (obj as Phaser.GameObjects.Image).disableInteractive();
             }
         });
+
+        if (visible) {
+            this.resetToPlanetSelection();
+        }
+    }
+
+    private resetToPlanetSelection() {
+        this.stopExploringEffect();
+        this.hideExplorationStartPrompt();
+        this.hideReturnButton();
+        this.clearRpgMessages();
+        this.awaitingExplorationStart = false;
+        this.nextExplorationPlanet = null;
+        this.nextPlanetRequiresFlight = false;
+        if (this.robot) {
+            this.robot.stop();
+            this.robot.setVisible(false);
+        }
+        this.planetBg?.setVisible(false);
     }
 
     private setRobotState(state: 'moving' | 'burn' | 'radiation' | 'broken' | 'shield' | 'normal' | 'exploring') {
@@ -402,55 +679,37 @@ export class RobotintoScene extends Scene {
         }
     }
 
-    private createHUD() {
-        const panelWidth = 420;
-        const panelHeight = 200;
-        const margin = 20;
-        const originX = margin + panelWidth / 2;
-        const originY = margin + panelHeight / 2 + 40;
-
-        const panel = this.add.rectangle(originX, originY, panelWidth, panelHeight, 0x0b210b, 0.8);
-        panel.setStrokeStyle(2, 0x123712);
-        panel.setDepth(5);
-
-        this.generationLabel = this.add.text(margin + 12, margin + 20, 'Generacion: 0', {
-            fontFamily: 'monospace',
-            fontSize: '20px',
-            color: '#b6ff9b'
-        }).setDepth(6);
-
-        this.planetLabel = this.add.text(margin + 12, margin + 44, 'Planeta: -', {
-            fontFamily: 'monospace',
-            fontSize: '20px',
-            color: '#b6ff9b'
-        }).setDepth(6);
-
-        const baseY = margin + 76;
-        for (let i = 0; i < 4; i++) {
-            const line = this.add.text(margin + 12, baseY + i * 24, '', {
-                fontFamily: 'monospace',
-                fontSize: '16px',
-                color: '#9ef78a',
-                wordWrap: { width: panelWidth - 32 }
-            }).setDepth(6);
-            this.hudTexts.push(line);
-        }
-    }
-
-    private pushHudLine(message: string) {
-        this.hudLines.push(message);
-        this.hudLines = this.hudLines.slice(-4);
-
-        for (let i = 0; i < this.hudTexts.length; i++) {
-            const idx = this.hudLines.length - this.hudTexts.length + i;
-            this.hudTexts[i].setText(idx >= 0 ? this.hudLines[idx] : '');
-        }
-    }
-
     private createExplorationCue() {
         this.explorationPulse = this.add.circle(0, 0, 90, 0x9ef78a, 0.18);
         this.explorationPulse.setStrokeStyle(3, 0xb6ff9b, 0.9);
         this.explorationPulse.setVisible(false).setDepth(8);
+    }
+
+    private playLandingAnimation(shouldFly: boolean, onComplete?: () => void) {
+        if (!this.robot) {
+            onComplete?.();
+            return;
+        }
+        this.stopExploringEffect();
+        this.robot.stop();
+        this.robot.setTexture('robot-moving');
+        this.robot.setVisible(true);
+        this.robot.setAngle(-6);
+
+        const startY = -this.scale.height * 0.25;
+        this.robot.setY(startY);
+
+        this.tweens.add({
+            targets: this.robot,
+            y: this.robotBaseY,
+            angle: { from: -6, to: 0 },
+            duration: 950,
+            ease: 'Bounce.Out',
+            onComplete: () => {
+                this.setRobotState(shouldFly ? 'exploring' : 'normal');
+                onComplete?.();
+            }
+        });
     }
 
     private playExplorationIntro(planet: Planet) {
@@ -528,7 +787,92 @@ export class RobotintoScene extends Scene {
         this.starEmitter?.stop();
     }
 
-    private startTravelAnimation(durationMs: number, onComplete: () => void) {
+    private createTravelLoadingOverlay() {
+        const { width, height } = this.scale;
+        this.travelLoadingScreen = this.add.image(width / 2, height / 2, 'loading-screen');
+        this.travelLoadingScreen.setDisplaySize(width, height);
+        this.travelLoadingScreen.setDepth(40);
+        this.travelLoadingScreen.setVisible(false);
+        this.travelLoadingScreen.setAlpha(0);
+
+        this.travelLoadingText = this.add.text(width / 2, height * 0.82, 'Viajando...', {
+            fontFamily: 'monospace',
+            fontSize: '38px',
+            color: '#b6ff9b',
+            backgroundColor: 'rgba(0, 0, 0, 0.35)'
+        }).setOrigin(0.5).setDepth(41).setVisible(false).setAlpha(0);
+    }
+
+    private showTravelLoading(message: string) {
+        if (!this.travelLoadingScreen || !this.travelLoadingText) {
+            return;
+        }
+
+        this.travelLoadingText.setText(message);
+        this.travelLoadingScreen.setVisible(true);
+        this.travelLoadingText.setVisible(true);
+
+        this.tweens.add({
+            targets: [this.travelLoadingScreen, this.travelLoadingText],
+            alpha: 1,
+            duration: 200,
+            ease: 'Sine.easeInOut'
+        });
+    }
+
+    private hideTravelLoading(onComplete?: () => void) {
+        if (!this.travelLoadingScreen || !this.travelLoadingText) {
+            onComplete?.();
+            return;
+        }
+
+        this.tweens.add({
+            targets: [this.travelLoadingScreen, this.travelLoadingText],
+            alpha: 0,
+            duration: 180,
+            ease: 'Sine.easeInOut',
+            onComplete: () => {
+                this.travelLoadingScreen?.setVisible(false);
+                this.travelLoadingText?.setVisible(false);
+                onComplete?.();
+            }
+        });
+    }
+
+    private hideTravelScene(onComplete?: () => void) {
+        const targets = [this.travelBg, this.travelStars, this.mothership, this.mothershipThrust].filter(Boolean) as Phaser.GameObjects.GameObject[];
+        this.tweens.killTweensOf(targets);
+        const fadeTargets = targets.length ? targets : undefined;
+
+        if (fadeTargets) {
+            this.tweens.add({
+                targets: fadeTargets,
+                alpha: { from: 1, to: 0 },
+                duration: 180,
+                ease: 'Sine.easeInOut',
+                onComplete: () => {
+                    this.travelTween?.stop();
+                    this.travelTween?.remove();
+                    this.travelTween = undefined;
+                    this.starEmitter?.stop();
+                    fadeTargets.forEach((obj) => {
+                        if ('setVisible' in obj) {
+                            (obj as Phaser.GameObjects.GameObject & Phaser.GameObjects.Components.Visible).setVisible(false);
+                        }
+                    });
+                    onComplete?.();
+                }
+            });
+        } else {
+            this.travelTween?.stop();
+            this.travelTween?.remove();
+            this.travelTween = undefined;
+            this.starEmitter?.stop();
+            onComplete?.();
+        }
+    }
+
+    private startTravelAnimation(durationMs: number, onComplete: () => void, holdAtEnd = false) {
         const bg = this.travelBg;
         const ship = this.mothership;
         const thrust = this.mothershipThrust;
@@ -559,9 +903,6 @@ export class RobotintoScene extends Scene {
         };
         syncThrust();
 
-        this.statusOverlay?.setVisible(false);
-        this.statusText?.setText('Viajando').setVisible(true).setAlpha(1).setDepth(22);
-
         const fadeTargets = stars ? [bg, stars, ship] : [bg, ship];
         this.tweens.add({
             targets: fadeTargets,
@@ -589,6 +930,25 @@ export class RobotintoScene extends Scene {
                 ease: 'Cubic.In',
                 onUpdate: syncThrust,
                 onComplete: () => {
+                    if (holdAtEnd) {
+                        ship.setVisible(false);
+                        thrust.setVisible(true).setAlpha(1);
+                        thrust.setPosition(-width * 0.35, shipY);
+                        this.starEmitter?.start();
+                        this.travelTween = this.tweens.add({
+                            targets: thrust,
+                            x: width * 1.2,
+                            y: shipY,
+                            angle: -5,
+                            duration: durationMs * 0.55,
+                            ease: 'Linear',
+                            repeat: -1,
+                            onRepeat: () => thrust.setPosition(-width * 0.35, shipY)
+                        });
+                        onComplete();
+                        return;
+                    }
+
                     const fadeOutTargets = stars ? [bg, stars, thrust, ship] : [bg, thrust, ship];
                     this.tweens.add({
                         targets: fadeOutTargets,
@@ -632,6 +992,8 @@ export class RobotintoScene extends Scene {
         this.mothership?.setVisible(false).setAlpha(0);
         this.mothershipThrust?.setVisible(false).setAlpha(0);
         this.statusText?.setVisible(false);
+        this.travelLoadingScreen?.setVisible(false).setAlpha(0);
+        this.travelLoadingText?.setVisible(false).setAlpha(0);
     }
 
     private ensurePlanetBackground(planetId: PlanetId, onComplete: () => void) {

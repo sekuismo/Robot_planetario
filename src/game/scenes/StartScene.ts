@@ -46,13 +46,14 @@ export class StartScene extends Scene {
         startButton.on('pointerdown', () => {
             startButton.disableInteractive();
             this.showLoading(() => {
-                EventBus.once('robotinto-ready', () => {
+                EventBus.once('travel-ready', () => {
                     this.scene.stop('StartScene');
-                    this.scene.bringToTop('RobotintoScene');
+                    this.scene.bringToTop('TravelScene');
                 });
 
-                this.scene.launch('RobotintoScene');
-                this.scene.bringToTop();
+                this.scene.launch('TravelScene');
+                this.scene.launch('ExplorationScene');
+                this.scene.bringToTop('TravelScene');
             });
         });
 
