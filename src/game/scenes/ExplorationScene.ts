@@ -2,6 +2,8 @@ import Phaser, { Scene } from 'phaser';
 import { EventBus } from '../EventBus';
 import { KnowledgeState, Planet, createInitialKnowledgeState } from '../domain';
 import { PLANET_CONFIG, PlanetConfig } from '../planetConfig';
+import { MissionCallbacks, runMissionForPlanet as runBaseMissionForPlanet } from '../exploration/missionEngine';
+import { AnimationProfile, getAnimationProfile } from '../exploration/animationProfiles';
 
 export class ExplorationScene extends Scene {
     private currentPlanet: Planet | null = null;
@@ -18,7 +20,7 @@ export class ExplorationScene extends Scene {
     private explorationPulseTween?: Phaser.Tweens.Tween;
     private messageQueue: string[] = [];
     private messageCompleteCallback?: () => void;
-    private advanceKey?: Phaser.Input.Keyboard.Key;
+    private rpgMessageTimer?: Phaser.Time.TimerEvent;
     private exploringTween?: Phaser.Tweens.Tween;
     private robotBaseY = 0;
     private isExploring = false;
@@ -31,6 +33,7 @@ export class ExplorationScene extends Scene {
     private statusShowing = false;
     private moveSpeed = 260;
     private moveBaseSpeed = 260;
+    private currentAnimation: AnimationProfile = { landingDurationMs: 950, hoverOffset: 12, moveSpeed: 240 };
     private movementKeys?: {
         up: Phaser.Input.Keyboard.Key;
         down: Phaser.Input.Keyboard.Key;
@@ -93,7 +96,6 @@ export class ExplorationScene extends Scene {
         this.createExplorationCue();
         this.createReturnButton();
         this.createRpgMessageBox();
-        this.registerAdvanceKey();
         this.registerMovementKeys();
 
         EventBus.on('begin-exploration', this.handleBeginExploration, this);
@@ -103,11 +105,14 @@ export class ExplorationScene extends Scene {
             EventBus.removeListener('begin-exploration', this.handleBeginExploration, this);
             EventBus.removeListener('exploration-reset', this.resetExploration, this);
             this.stopExploringEffect();
-            this.advanceKey?.destroy();
+            this.rpgMessageTimer?.remove();
         });
     }
 
     update(_: number, delta: number) {
+        if (this.messageQueue.length > 0 && !this.rpgMessageTimer) {
+            this.scheduleRpgAutoAdvance();
+        }
         if (!this.explorationActive || !this.robot) {
             return;
         }
@@ -127,6 +132,7 @@ export class ExplorationScene extends Scene {
             return;
         }
         this.currentPlanet = planet;
+        this.currentAnimation = getAnimationProfile(planet);
         this.isExploring = true;
         this.explorationActive = false;
         this.missionTriggered = false;
@@ -173,9 +179,12 @@ export class ExplorationScene extends Scene {
         const config = PLANET_CONFIG[planet.id];
 
         const introMsgs = config?.introMessages ?? [];
+        if (introMsgs.length) {
+            this.enqueueRpgMessages(introMsgs, undefined, false);
+        }
         const runMission = () => {
-            const narrative = [...introMsgs, ...this.runMissionForPlanet(planet, config?.dangerOverrides)];
-            this.showRpgMessages(narrative, () => {
+            const narrative = this.runMissionForPlanet(planet, config);
+            this.enqueueRpgMessages(narrative, () => {
                 this.showReturnButton();
             });
         };
@@ -196,20 +205,27 @@ export class ExplorationScene extends Scene {
         this.missionTriggered = false;
         this.explorationActive = true;
         this.explorationProgress = 0;
-        this.explorationStepGoal = config?.stepGoal ?? 950;
-        const explorationMsgs = config?.explorationMessages ?? [
-            'Escaneando terreno cercano...',
-            'Registrando muestras...',
-            'Analizando estructuras...'
-        ];
-        const alertMsgs = this.buildExplorationAlerts(planet, config?.dangerOverrides);
-        const merged = [...explorationMsgs, ...alertMsgs];
-        this.explorationMilestones = merged.map((msg, idx) => ({
-            threshold: this.explorationStepGoal * ((idx + 1) / (merged.length + 1)),
+
+        const defaultPhase = () => {
+            const explorationMsgs = config?.explorationMessages ?? [
+                'Escaneando terreno cercano...',
+                'Registrando muestras...',
+                'Analizando estructuras...'
+            ];
+            const alertMsgs = this.buildExplorationAlerts(planet, config?.dangerOverrides);
+            const merged = [...explorationMsgs, ...alertMsgs];
+            return { messages: merged, stepGoal: config?.stepGoal ?? 950 };
+        };
+
+        const phase = config?.buildExplorationPhase ? config.buildExplorationPhase(planet) : defaultPhase();
+        this.explorationStepGoal = phase.stepGoal ?? config?.stepGoal ?? 950;
+
+        this.explorationMilestones = (phase.messages ?? []).map((msg, idx) => ({
+            threshold: this.explorationStepGoal * ((idx + 1) / ((phase.messages?.length ?? 0) + 1)),
             message: msg
         }));
 
-        this.moveBaseSpeed = 240;
+        this.moveBaseSpeed = this.currentAnimation.moveSpeed;
         this.moveSpeed = this.moveBaseSpeed;
 
         this.setRobotState('moving');
@@ -261,7 +277,7 @@ export class ExplorationScene extends Scene {
             wordWrap: { width: boxWidth - 44 }
         });
 
-        const prompt = this.add.text(boxWidth / 2 - 18, boxHeight / 2 - 22, 'R - avanzar', {
+        const prompt = this.add.text(boxWidth / 2 - 18, boxHeight / 2 - 22, '', {
             fontFamily: 'monospace',
             fontSize: '20px',
             color: '#9ef78a'
@@ -273,11 +289,8 @@ export class ExplorationScene extends Scene {
         this.rpgBox.setAlpha(0);
         this.rpgBoxText = text;
         this.rpgBoxPrompt = prompt;
-    }
-
-    private registerAdvanceKey() {
-        this.advanceKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.R);
-        this.advanceKey?.on('down', () => this.advanceRpgMessage());
+        this.rpgBoxPrompt.setText('');
+        this.rpgBoxPrompt.setVisible(false);
     }
 
     private registerMovementKeys() {
@@ -289,33 +302,60 @@ export class ExplorationScene extends Scene {
         };
     }
 
-    private showRpgMessages(messages: string[], onComplete?: () => void) {
+    private enqueueRpgMessages(messages: string[], onComplete?: () => void, replace = false) {
         if (!this.rpgBox || !this.rpgBoxText) {
             onComplete?.();
             return;
         }
 
-        this.messageQueue = messages.filter((msg) => msg.trim().length > 0);
-        this.messageCompleteCallback = onComplete;
+        const clean = messages.filter((msg) => msg.trim().length > 0);
+        if (replace) {
+            this.messageQueue = [];
+            this.rpgMessageTimer?.remove();
+            this.rpgMessageTimer = undefined;
+        }
 
-        if (this.messageQueue.length === 0) {
+        if (clean.length === 0 && !this.messageQueue.length) {
             onComplete?.();
             return;
         }
 
-        this.rpgBox.setVisible(true);
-        this.rpgBox.setAlpha(0);
-        this.rpgBoxText.setText(this.messageQueue[0]);
+        const hadMessages = this.messageQueue.length > 0;
+        this.messageQueue.push(...clean);
 
-        this.tweens.add({
-            targets: this.rpgBox,
-            alpha: 1,
-            duration: 180,
-            ease: 'Sine.easeInOut'
-        });
+        if (onComplete) {
+            const prev = this.messageCompleteCallback;
+            this.messageCompleteCallback = prev
+                ? () => {
+                      prev();
+                      onComplete();
+                  }
+                : onComplete;
+        }
+
+        if (!this.rpgBox.visible) {
+            this.rpgBox.setVisible(true);
+            this.rpgBox.setAlpha(0);
+            this.rpgBoxText.setText(this.messageQueue[0] ?? '');
+
+            this.tweens.add({
+                targets: this.rpgBox,
+                alpha: 1,
+                duration: 180,
+                ease: 'Sine.easeInOut'
+            });
+        } else if (!hadMessages && this.messageQueue.length) {
+            this.rpgBoxText.setText(this.messageQueue[0]);
+        }
+
+        if (!this.rpgMessageTimer) {
+            this.scheduleRpgAutoAdvance();
+        }
     }
 
     private advanceRpgMessage() {
+        this.rpgMessageTimer?.remove();
+        this.rpgMessageTimer = undefined;
         if (this.messageQueue.length === 0) {
             return;
         }
@@ -332,6 +372,7 @@ export class ExplorationScene extends Scene {
                     this.rpgBoxText?.setText('');
                     const done = this.messageCompleteCallback;
                     this.messageCompleteCallback = undefined;
+                    this.rpgMessageTimer = undefined;
                     done?.();
                 }
             });
@@ -339,11 +380,23 @@ export class ExplorationScene extends Scene {
         }
 
         this.rpgBoxText?.setText(this.messageQueue[0]);
+        this.scheduleRpgAutoAdvance();
+    }
+
+    private scheduleRpgAutoAdvance() {
+        if (!this.rpgBoxText || this.messageQueue.length === 0 || this.rpgMessageTimer) {
+            return;
+        }
+        const text = this.messageQueue[0];
+        const delay = Phaser.Math.Clamp(1100 + text.length * 25, 1400, 5200);
+        this.rpgMessageTimer = this.time.delayedCall(delay, () => this.advanceRpgMessage());
     }
 
     private clearRpgMessages() {
         this.messageQueue = [];
         this.messageCompleteCallback = undefined;
+        this.rpgMessageTimer?.remove();
+        this.rpgMessageTimer = undefined;
         this.rpgBox?.setVisible(false);
         this.rpgBox?.setAlpha(0);
         this.rpgBoxText?.setText('');
@@ -356,7 +409,7 @@ export class ExplorationScene extends Scene {
         const next = this.explorationMilestones[0];
         if (this.explorationProgress >= next.threshold) {
             this.explorationMilestones.shift();
-            this.showStatusMessage(next.message, 340);
+            this.enqueueRpgMessages([next.message]);
         }
     }
 
@@ -573,7 +626,7 @@ export class ExplorationScene extends Scene {
         this.robot.setY(this.robotBaseY);
         this.exploringTween = this.tweens.add({
             targets: this.robot,
-            y: this.robotBaseY - 12,
+            y: this.robotBaseY - this.currentAnimation.hoverOffset,
             angle: 3,
             duration: 650,
             ease: 'Sine.easeInOut',
@@ -618,7 +671,7 @@ export class ExplorationScene extends Scene {
             targets: this.robot,
             y: this.robotBaseY,
             angle: { from: -6, to: 0 },
-            duration: 950,
+            duration: this.currentAnimation.landingDurationMs,
             ease: 'Bounce.Out',
             onComplete: () => {
                 this.setRobotState(shouldFly ? 'exploring' : 'normal');
@@ -661,110 +714,21 @@ export class ExplorationScene extends Scene {
         });
     }
 
-    private runMissionForPlanet(planet: Planet, dangerOverrides?: Partial<{ temperatureC: number; radiation: number; gravityG: number; humidity: number }>): string[] {
-        const sensors = {
-            temperatureC: planet.temperatureC,
-            radiation: planet.radiation,
-            gravityG: planet.gravityG,
-            humidity: planet.humidity
+    private runMissionForPlanet(
+        planet: Planet,
+        config?: PlanetConfig
+    ): string[] {
+        const callbacks: MissionCallbacks = {
+            log: (msg) => this.log(msg),
+            setRobotState: (state) => this.setRobotState(state)
         };
-        const narrative: string[] = [];
-
-        const knowledge = this.knowledge[planet.id];
-
-        this.log(`[Generacion ${this.currentGeneration}] Explorando ${planet.name}`);
-        this.log(
-            `Sensores => Temp: ${sensors.temperatureC}C, Rad: ${sensors.radiation}, Grav: ${sensors.gravityG}g, Hum: ${sensors.humidity}`
-        );
-        narrative.push(`Gen ${this.currentGeneration} | ${planet.name}`);
-        narrative.push(
-            `Lecturas -> Temp: ${sensors.temperatureC}C | Rad: ${sensors.radiation} | Grav: ${sensors.gravityG}g | Hum: ${sensors.humidity}%`
-        );
-
-        if (!planet.hasSurface) {
-            knowledge.failures += 1;
-            knowledge.gravityThreshold = Math.max(knowledge.gravityThreshold, sensors.gravityG + 1);
-            knowledge.radiationThreshold = Math.max(knowledge.radiationThreshold, sensors.radiation + 20);
-            this.log('Este planeta no tiene superficie solida. Protocolo extremo activado. Mision fallida.');
-            this.log('Ajustando umbrales para entornos gaseosos.');
-            narrative.push('No hay superficie solida. El dron aborta la maniobra y registra la falla.');
-            narrative.push('Ajustando umbrales para futuras incursiones gaseosas.');
-            this.setRobotState('broken');
-            return narrative;
-        }
-
-        const protectTemp = sensors.temperatureC > knowledge.temperatureThreshold;
-        const protectRad = sensors.radiation > knowledge.radiationThreshold;
-        const protectGrav = sensors.gravityG > knowledge.gravityThreshold;
-        const protectHum = sensors.humidity > knowledge.humidityThreshold;
-
-        const danger = {
-            temperatureC: 80,
-            radiation: 50,
-            gravityG: 1.5,
-            humidity: 85,
-            ...(dangerOverrides ?? {})
-        };
-
-        const logsForProtection = [
-            protectTemp
-                ? `Temperatura detectada ${sensors.temperatureC}C > umbral ${knowledge.temperatureThreshold}C. Activando proteccion termica.`
-                : 'Temperatura dentro de rango seguro. No se activa proteccion termica.',
-            protectRad
-                ? `Radiacion detectada ${sensors.radiation} > umbral ${knowledge.radiationThreshold}. Activando escudo.`
-                : 'Radiacion dentro de rango seguro. No se activa escudo.',
-            protectGrav
-                ? `Gravedad detectada ${sensors.gravityG}g > umbral ${knowledge.gravityThreshold}g. Ajustando estabilizadores.`
-                : 'Gravedad dentro de rango seguro. Sin ajuste de estabilizadores.',
-            protectHum
-                ? `Humedad detectada ${sensors.humidity} > umbral ${knowledge.humidityThreshold}. Sellando compartimentos.`
-                : 'Humedad dentro de rango seguro. Sistemas estandar activos.'
-        ];
-        logsForProtection.forEach((msg) => {
-            this.log(msg);
-            narrative.push(msg);
+        const missionFn = config?.customMission ?? runBaseMissionForPlanet;
+        return missionFn({
+            planet,
+            knowledge: this.knowledge,
+            generation: this.currentGeneration,
+            dangerOverrides: config?.dangerOverrides,
+            callbacks
         });
-
-        let failureReason: string | null = null;
-
-        if (!protectTemp && sensors.temperatureC > danger.temperatureC) {
-            failureReason = 'temperatura';
-        } else if (!protectRad && sensors.radiation > danger.radiation) {
-            failureReason = 'radiacion';
-        } else if (!protectGrav && sensors.gravityG > danger.gravityG) {
-            failureReason = 'gravedad';
-        } else if (!protectHum && sensors.humidity > danger.humidity) {
-            failureReason = 'humedad';
-        }
-
-        if (failureReason) {
-            knowledge.failures += 1;
-            if (failureReason === 'temperatura') {
-                knowledge.temperatureThreshold = sensors.temperatureC - 10;
-                this.setRobotState('burn');
-                narrative.push('La temperatura excede el limite y las ruedas se dañan.');
-            } else if (failureReason === 'radiacion') {
-                knowledge.radiationThreshold = sensors.radiation - 5;
-                this.setRobotState('radiation');
-                narrative.push('La radiacion atraviesa los sistemas. Circuitos dañados.');
-            } else if (failureReason === 'gravedad') {
-                knowledge.gravityThreshold = sensors.gravityG - 0.1;
-                this.setRobotState('broken');
-                narrative.push('La gravedad colapsa la estructura. Perdida de estabilidad.');
-            } else if (failureReason === 'humedad') {
-                knowledge.humidityThreshold = sensors.humidity - 5;
-                this.setRobotState('shield');
-                narrative.push('La humedad ahoga los sensores. Sistemas en modo de emergencia.');
-            }
-            this.log(`Mision fallida por ${failureReason}. Ajustando umbral de ${failureReason} para la proxima generacion.`);
-            narrative.push(`Mision fallida por ${failureReason}. Umbral actualizado para la siguiente generacion.`);
-        } else {
-            knowledge.successes += 1;
-            this.log('Mision exitosa. Conocimiento reforzado.');
-            narrative.push('Exploracion completada sin daños. Conocimiento reforzado.');
-            this.setRobotState('normal');
-        }
-
-        return narrative;
     }
 }
