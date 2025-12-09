@@ -3,6 +3,9 @@ import { useRef, useState } from 'react';
 import { IRefPhaserGame, PhaserGame } from './PhaserGame';
 import { LogPanel } from './components/LogPanel';
 import { HudOverlay } from './components/HudOverlay';
+import { MissionHistoryPanel } from './components/MissionHistoryPanel';
+import { LearningPanel } from './components/LearningPanel';
+import { DebugOverlay } from './components/DebugOverlay';
 
 function App() {
     const phaserRef = useRef<IRefPhaserGame | null>(null);
@@ -22,6 +25,9 @@ function App() {
                     <PhaserGame ref={phaserRef} currentActiveScene={handleSceneReady} />
                 </div>
             </div>
+            <MissionHistoryPanel />
+            <LearningPanel />
+            <DebugOverlay />
             <button className="log-toggle" onClick={() => setLogOpen(true)}>
                 Ver registro
             </button>

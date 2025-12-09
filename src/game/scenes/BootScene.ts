@@ -1,6 +1,8 @@
 import { Scene } from 'phaser';
 import { REGISTERED_PLANETS } from '../planetRegistry';
 import { createSceneCoordinator } from '../sceneCoordinator';
+import { loadRobotMemory } from '../persistence/robotintoMemory';
+import { seedMissionHistory } from '../exploration/missionModel';
 
 export class BootScene extends Scene {
     constructor() {
@@ -24,6 +26,9 @@ export class BootScene extends Scene {
     }
 
     create() {
+        const memory = loadRobotMemory();
+        seedMissionHistory(memory.missionHistory ?? []);
+
         const coordinator = createSceneCoordinator(this.scene);
         coordinator.registerBaseScenes();
         coordinator.registerPlanetScenes();

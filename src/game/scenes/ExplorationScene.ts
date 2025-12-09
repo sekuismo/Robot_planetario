@@ -1,10 +1,11 @@
 import Phaser, { Scene } from 'phaser';
 import { explorationBus, navigationBus, uiBus } from '../EventBus';
-import { KnowledgeState, Planet, createInitialKnowledgeState } from '../domain';
+import { KnowledgeState, Planet } from '../domain';
 import { PLANET_CONFIG, PlanetConfig } from '../planetConfig';
 import { MissionCallbacks, runMissionForPlanet as runBaseMissionForPlanet } from '../exploration/missionEngine';
 import { AnimationProfile, getAnimationProfile } from '../exploration/animationProfiles';
 import { MovementControls, createMovementControls } from '../input/movementControls';
+import { loadRobotMemory } from '../persistence/robotintoMemory';
 
 type ProtectionState = {
     temperature: boolean;
@@ -13,10 +14,14 @@ type ProtectionState = {
     humidity: boolean;
 };
 
+type RobotState = 'moving' | 'burn' | 'radiation' | 'broken' | 'shield' | 'normal' | 'exploring';
+
 export class ExplorationScene extends Scene {
     private currentPlanet: Planet | null = null;
     private currentGeneration = 0;
-    private knowledge: KnowledgeState = createInitialKnowledgeState();
+    private knowledge: KnowledgeState;
+    private robotState: RobotState = 'normal';
+    private lastProtections: ProtectionState | null = null;
     private robot?: Phaser.GameObjects.Sprite;
     private rpgBox?: Phaser.GameObjects.Container;
     private rpgBoxText?: Phaser.GameObjects.Text;
@@ -41,6 +46,7 @@ export class ExplorationScene extends Scene {
     private statusTimer?: Phaser.Time.TimerEvent;
     private statusShowing = false;
     private hazardSafeUntil = 0;
+    private isAerialExploration = false;
     private moveSpeed = 260;
     private moveBaseSpeed = 260;
     private currentAnimation: AnimationProfile = { landingDurationMs: 950, hoverOffset: 12, moveSpeed: 240 };
@@ -65,6 +71,9 @@ export class ExplorationScene extends Scene {
     private missionEvaluated = false;
     private currentPlanetConfig?: PlanetConfig;
     private missionCompleteBanner?: Phaser.GameObjects.Image;
+    private protectionIconTemp?: Phaser.GameObjects.Image;
+    private protectionIconRad?: Phaser.GameObjects.Image;
+    private flyingInitialized = false;
 
     constructor() {
         super('ExplorationScene');
@@ -98,6 +107,8 @@ export class ExplorationScene extends Scene {
         this.load.image('robot-explore-3', 'assets/robotinto/robotinto_volador/volador_anim3.png');
         this.load.image('robot-explore-4', 'assets/robotinto/robotinto_volador/volador_anim4.png');
         this.load.image('robot-explore-5', 'assets/robotinto/robotinto_volador/volador_anim5.png');
+        this.load.image('robot-protect-thermal', 'assets/robotinto/robotinto proteccion termal.png');
+        this.load.image('robot-protect-radiation', 'assets/robotinto/Robotinto_proteccion_radiacion.png');
         this.load.image('collectible-1', 'assets/colectionables/colec_1.png');
         this.load.image('collectible-2', 'assets/colectionables/colec_2.png');
         this.load.image('collectible-3', 'assets/colectionables/colec_3.png');
@@ -106,6 +117,9 @@ export class ExplorationScene extends Scene {
     }
 
     create() {
+        const memory = loadRobotMemory();
+        this.knowledge = memory.knowledgeByPlanet;
+
         this.cameras.main.setBackgroundColor('rgba(0,0,0,0)');
         this.robotBaseY = this.scale.height * 0.55;
 
@@ -113,11 +127,19 @@ export class ExplorationScene extends Scene {
         this.robot.setScale(0.5);
         this.robot.setVisible(false);
         this.robot.setDepth(9);
-        if (!this.anims.exists('robot-exploring')) {
+        if (!this.anims.exists('robot-fly-transition')) {
             this.anims.create({
-                key: 'robot-exploring',
-                frames: ['robot-explore-1', 'robot-explore-2', 'robot-explore-3', 'robot-explore-4', 'robot-explore-5'].map((key) => ({ key })),
+                key: 'robot-fly-transition',
+                frames: ['robot-explore-1', 'robot-explore-2', 'robot-explore-3', 'robot-explore-4'].map((key) => ({ key })),
                 frameRate: 8,
+                repeat: 0
+            });
+        }
+        if (!this.anims.exists('robot-fly-sustain')) {
+            this.anims.create({
+                key: 'robot-fly-sustain',
+                frames: ['robot-explore-4', 'robot-explore-5'].map((key) => ({ key })),
+                frameRate: 6,
                 repeat: -1
             });
         }
@@ -127,6 +149,7 @@ export class ExplorationScene extends Scene {
         this.createReturnButton();
         this.createRpgMessageBox();
         this.createMissionCompleteBanner();
+        this.createProtectionIcons();
         this.createHud();
         this.movementControls = createMovementControls(this);
 
@@ -162,11 +185,13 @@ export class ExplorationScene extends Scene {
             }
             this.handleCollectiblePickup();
             this.tickHazards(delta);
+            this.updateProtectionIconsPosition();
             return;
         }
         if (!this.missionTriggered && this.explorationProgress >= this.explorationStepGoal) {
             this.triggerMission();
         }
+        this.updateProtectionIconsPosition();
     }
 
     private handleBeginExploration(payload: { planet: Planet }) {
@@ -177,6 +202,7 @@ export class ExplorationScene extends Scene {
         this.currentPlanet = planet;
         this.currentPlanetConfig = PLANET_CONFIG[planet.id];
         this.currentAnimation = getAnimationProfile(planet);
+        const canFlyExplore = this.shouldUseAerialExploration(planet);
         this.isExploring = true;
         this.explorationActive = false;
         this.missionTriggered = false;
@@ -188,9 +214,24 @@ export class ExplorationScene extends Scene {
         this.statusTimer = undefined;
         this.statusShowing = false;
         this.currentGeneration += 1;
+        this.lastProtections = null;
+        this.isAerialExploration = false;
         this.lifeProtocolActive = !!planet.hasLife;
         this.hazardSafeUntil = 0;
         this.explorationHasMoved = false;
+        this.flyingInitialized = false;
+        this.usingSampleCollection = false;
+        this.samplesCollected = 0;
+        const defaultSampleGoal = this.currentPlanetConfig?.collectionConfig?.sampleGoal ?? 10;
+        this.sampleGoal = planet.hasSurface || canFlyExplore ? defaultSampleGoal : 0;
+        this.health = 100;
+        this.hazardDamagePerSecond = 0;
+        this.hazardMovementDamagePerSecond = 0;
+        this.moveBaseSpeed = this.currentAnimation.moveSpeed;
+        this.moveSpeed = this.moveBaseSpeed;
+        this.hideHud();
+        this.clearCollectibles();
+        this.showHud(planet);
         uiBus.emit('generation-changed', this.currentGeneration);
         uiBus.emit('planet-changed', planet.id);
         this.log(`Robotinto generacion ${this.currentGeneration} explorando ${planet.name}`);
@@ -199,8 +240,6 @@ export class ExplorationScene extends Scene {
             this.showStatusMessage('Vida detectada. Protocolo de exploracion pasiva.', 640);
             this.log('Vida detectada: activando protocolo pasivo (menos velocidad, movimientos cautos).');
         }
-        this.hideHud();
-        this.clearCollectibles();
 
         this.hideReturnButton();
         this.clearRpgMessages();
@@ -214,6 +253,8 @@ export class ExplorationScene extends Scene {
             this.playExplorationIntro(planet);
             this.runExplorationSequence(planet);
         });
+
+        this.emitDebugState(planet);
     }
 
     private resetExploration() {
@@ -239,11 +280,15 @@ export class ExplorationScene extends Scene {
         this.hazardMovementDamagePerSecond = 0;
         this.usingSampleCollection = false;
         this.lifeProtocolActive = false;
+        this.isAerialExploration = false;
+        this.lastProtections = null;
+        this.robotState = 'normal';
         this.clearCollectibles();
         this.hideHud();
         this.clearRpgMessages();
         this.hideReturnButton();
         this.stopExploringEffect();
+        this.hideProtectionIcons();
         if (this.robot) {
             this.robot.setVisible(false);
             this.robot.stop();
@@ -260,11 +305,21 @@ export class ExplorationScene extends Scene {
             this.evaluateMissionOutcome(true);
         };
 
+        const protections = this.computeProtectionState(planet);
+        const canFlyExplore = this.shouldUseAerialExploration(planet);
+
         if (!planet.hasSurface) {
-            runMission();
+            this.updateProtectionVisuals(planet, protections);
+            this.isAerialExploration = canFlyExplore;
+            if (!canFlyExplore) {
+                runMission();
+                return;
+            }
+            this.beginSampleCollection(planet, config, runMission, true);
             return;
         }
 
+        this.isAerialExploration = false;
         this.startFreeExploration(planet, config, runMission);
     }
 
@@ -290,9 +345,9 @@ export class ExplorationScene extends Scene {
         const phase = this.resolveExplorationPhase(planet, config, protections);
         this.configureExplorationMessages(phase.messages, phase.stepGoal);
 
-        const lifeFactor = this.lifeProtocolActive ? 0.7 : 1;
-        this.moveBaseSpeed = this.currentAnimation.moveSpeed * lifeFactor;
-        this.moveSpeed = this.moveBaseSpeed;
+        const hazard = this.computeHazardRate(planet, config, protections);
+        this.applyProtectionEffectsToMovement(planet, protections, hazard.hazardSources);
+        this.updateProtectionVisuals(planet, protections);
 
         this.setRobotState('moving');
         this.showStatusMessage('Explora con W A S D', 420);
@@ -307,7 +362,8 @@ export class ExplorationScene extends Scene {
         };
     }
 
-    private beginSampleCollection(planet: Planet, config: PlanetConfig | undefined, onComplete: () => void) {
+    private beginSampleCollection(planet: Planet, config: PlanetConfig | undefined, onComplete: () => void, aerial = false) {
+        this.isAerialExploration = aerial;
         this.usingSampleCollection = true;
         this.missionTriggered = false;
         this.explorationActive = true;
@@ -328,7 +384,8 @@ export class ExplorationScene extends Scene {
             this.hazardDamagePerSecond = 0;
             this.hazardMovementDamagePerSecond = 0;
         }
-        this.hazardSafeUntil = this.time.now + 2600;
+        const extraSafetyMs = hazard.mitigated.length > 0 ? 1200 : 0;
+        this.hazardSafeUntil = this.time.now + 2600 + extraSafetyMs;
         if (hazard.mitigated.length) {
             this.log(`Protecciones activadas para ${hazard.mitigated.join(', ')}.`);
         }
@@ -338,12 +395,24 @@ export class ExplorationScene extends Scene {
             this.log(`Riesgos sin cubrir: ${hazard.active.join(', ')}. Daño ambiental aplicado.`);
         }
 
+        if (hazard.mitigated.includes('temperatura')) {
+            this.log('Proteccion termica evitó daño critico a las ruedas durante la exploracion.');
+            this.showStatusMessage('Proteccion termica activa: ruedas protegidas del calor extremo.', 520);
+        }
+        if (hazard.mitigated.includes('radiacion')) {
+            this.log('Escudo anti-radiacion activo: se bloquea el daño mas peligroso de la radiacion.');
+            this.showStatusMessage('Escudo anti-radiacion: radiacion peligrosa mitigada.', 520);
+        }
+        if (hazard.mitigated.includes('humedad')) {
+            this.log('Sellado antihumedad activo: se evitan cortocircuitos por condensacion.');
+            this.showStatusMessage('Sellado antihumedad: componentes protegidos de la humedad critica.', 520);
+        }
+
         const phase = this.resolveExplorationPhase(planet, config, protections);
         this.configureExplorationMessages(phase.messages, phase.stepGoal);
 
-        const lifeFactor = this.lifeProtocolActive ? 0.7 : 1;
-        this.moveBaseSpeed = this.currentAnimation.moveSpeed * lifeFactor;
-        this.moveSpeed = this.moveBaseSpeed;
+        this.applyProtectionEffectsToMovement(planet, protections, hazard.hazardSources);
+        this.updateProtectionVisuals(planet, protections);
 
         this.clearCollectibles();
         this.spawnCollectibles(this.sampleGoal);
@@ -361,7 +430,10 @@ export class ExplorationScene extends Scene {
         }
         status.forEach((msg) => this.showStatusMessage(msg, 520));
 
-        this.setRobotState('moving');
+        this.setRobotState(this.isAerialExploration ? 'exploring' : 'moving');
+        if (this.isAerialExploration) {
+            this.showStatusMessage('Entorno gaseoso: modo vuelo activado. Explora con W A S D', 520);
+        }
 
         this.completeExploration = () => {
             this.explorationActive = false;
@@ -374,6 +446,18 @@ export class ExplorationScene extends Scene {
     }
 
     private completeExploration: () => void = () => {};
+
+    private shouldUseAerialExploration(planet: Planet): boolean {
+        if (planet.hasSurface) {
+            return false;
+        }
+        const knowledge = this.knowledge[planet.id];
+        if (!knowledge) {
+            return false;
+        }
+        // Tras la primera generación fallida ya "aprende" que no hay superficie y se adapta al modo vuelo.
+        return knowledge.failures > 0 || knowledge.successes > 0;
+    }
 
     private computeProtectionState(planet: Planet): ProtectionState {
         const knowledge = this.knowledge[planet.id];
@@ -425,6 +509,40 @@ export class ExplorationScene extends Scene {
         return { rate: hazardSources * baseDamage, hazardSources, mitigated, active };
     }
 
+    private applyProtectionEffectsToMovement(planet: Planet, protections: ProtectionState, hazardSources: number) {
+        const gravityHigh = planet.gravityG >= 1.5;
+        const gravityLow = planet.gravityG < 0.5;
+
+        let speedFactor = 1;
+
+        if (gravityHigh) {
+            speedFactor *= protections.gravity ? 0.9 : 0.6;
+        } else if (gravityLow) {
+            speedFactor *= protections.gravity ? 1.0 : 0.8;
+        }
+
+        if (this.lifeProtocolActive) {
+            speedFactor *= 0.7;
+        }
+
+        if (hazardSources > 0 && !protections.gravity) {
+            speedFactor *= 0.9;
+        }
+
+        this.moveBaseSpeed = this.currentAnimation.moveSpeed * speedFactor;
+        this.moveSpeed = this.moveBaseSpeed;
+
+        if (gravityHigh || gravityLow) {
+            if (protections.gravity) {
+                this.showStatusMessage('Adaptacion gravitacional activa: movilidad estabilizada.', 520);
+                this.log('Adaptacion gravitacional activa: el movimiento se mantiene estable pese a la gravedad extrema.');
+            } else {
+                this.showStatusMessage('Gravedad extrema sin adaptacion: movimiento penalizado.', 520);
+                this.log('Gravedad extrema sin adaptacion: Robotinto se mueve con dificultad en este entorno.');
+            }
+        }
+    }
+
     private spawnCollectibles(count: number) {
         const margin = 80;
         const keys = ['collectible-1', 'collectible-2', 'collectible-3', 'collectible-4'];
@@ -462,6 +580,15 @@ export class ExplorationScene extends Scene {
         this.collectibleItems = [];
     }
 
+    private showPriorityStatusMessage(message: string, visibleMs = 1000, onComplete?: () => void) {
+        // Interrumpe cualquier cola pendiente para mostrar de inmediato mensajes clave (como misión completada).
+        this.statusTimer?.remove();
+        this.statusTimer = undefined;
+        this.statusQueue = [];
+        this.statusShowing = false;
+        this.showStatusMessage(message, visibleMs, onComplete);
+    }
+
     private handleCollectiblePickup() {
         if (!this.robot || !this.usingSampleCollection || !this.explorationActive) {
             return;
@@ -490,7 +617,7 @@ export class ExplorationScene extends Scene {
         }
         this.explorationActive = false;
         this.showMissionCompleteBanner();
-        this.showStatusMessage('Muestras completas. Procesando datos...', 800, () => this.completeExploration());
+        this.showPriorityStatusMessage('Muestras completas. Procesando datos...', 900, () => this.completeExploration());
     }
 
     private applyMovementHazard(moved: number) {
@@ -863,10 +990,14 @@ export class ExplorationScene extends Scene {
         }
         const narrative = this.runMissionForPlanet(this.currentPlanet, this.currentPlanetConfig, suppressRobotState);
         this.missionEvaluated = true;
-        if (showNarrative) {
-            this.showStatusSequence(narrative, 520, () => {
-                this.showReturnButton();
-            });
+        this.emitDebugState(this.currentPlanet);
+        // Muestra siempre el botón para volver al mapa,
+        // independientemente de la cola de mensajes de narrativa.
+        this.showReturnButton();
+        // Ademas, mostramos la narrativa principal como overlay
+        // cuando corresponde (por ejemplo, en planetas gaseosos).
+        if (showNarrative && narrative.length) {
+            this.showStatusSequence(narrative, 520);
         }
     }
 
@@ -893,6 +1024,9 @@ export class ExplorationScene extends Scene {
 
         if (dx === 0 && dy === 0) {
             this.robot.setAngle(0);
+            if (this.isAerialExploration && this.robotState === 'exploring') {
+                this.updateFlyingTexture(false);
+            }
             return 0;
         }
 
@@ -908,6 +1042,9 @@ export class ExplorationScene extends Scene {
         const moved = Math.hypot(nextX - this.robot.x, nextY - this.robot.y);
         this.robot.setPosition(nextX, nextY);
         this.robot.setAngle(dx > 0 ? 3 : dx < 0 ? -3 : 0);
+        if (this.isAerialExploration && this.robotState === 'exploring') {
+            this.updateFlyingTexture(moved > 0);
+        }
 
         return moved;
     }
@@ -966,9 +1103,9 @@ export class ExplorationScene extends Scene {
     }
 
     private computeStatusDuration(message: string, minVisible: number): number {
-        const min = Math.max(minVisible, 2400);
-        const target = 1800 + message.length * 28;
-        const max = Math.max(min + 2400, 6200);
+        const min = Math.max(minVisible, 1200);
+        const target = 1400 + message.length * 24;
+        const max = Math.max(min + 1600, 6200);
         return Phaser.Math.Clamp(target, min, max);
     }
 
@@ -1037,6 +1174,9 @@ export class ExplorationScene extends Scene {
         this.clearCollectibles();
         this.hideHud();
         this.stopExploringEffect();
+        this.isAerialExploration = false;
+        this.lastProtections = null;
+        this.hideProtectionIcons();
         this.hazardSafeUntil = 0;
         if (this.robot) {
             this.robot.stop();
@@ -1045,10 +1185,11 @@ export class ExplorationScene extends Scene {
         navigationBus.emit('return-to-map', undefined as void);
     }
 
-    private setRobotState(state: 'moving' | 'burn' | 'radiation' | 'broken' | 'shield' | 'normal' | 'exploring') {
+    private setRobotState(state: RobotState) {
         if (!this.robot) {
             return;
         }
+        this.robotState = state;
         const textureMap: Record<'moving' | 'burn' | 'radiation' | 'broken' | 'shield' | 'normal' | 'exploring', string> = {
             moving: 'robot-moving',
             burn: 'robot-burn',
@@ -1059,13 +1200,41 @@ export class ExplorationScene extends Scene {
             exploring: 'robot-explore-1'
         };
         if (state === 'exploring') {
-            this.robot.play('robot-exploring', true);
-            this.startExploringEffect();
+            if (this.isAerialExploration) {
+                this.flyingInitialized = true;
+                this.robot.stop();
+                this.robot.setTexture('robot-explore-1');
+                this.robot.play('robot-fly-transition');
+                this.robot.once(Phaser.Animations.Events.ANIMATION_COMPLETE, (anim: Phaser.Animations.Animation) => {
+                    if (!this.robot || anim.key !== 'robot-fly-transition' || !this.isAerialExploration || this.robotState !== 'exploring') {
+                        return;
+                    }
+                    this.robot.stop();
+                    this.robot.setTexture('robot-explore-4');
+                });
+                this.startExploringEffect();
+            } else {
+                if (!this.flyingInitialized) {
+                    this.flyingInitialized = true;
+                    this.robot.setTexture('robot-explore-1');
+                    this.robot.play('robot-fly-transition');
+                    this.robot.once(Phaser.Animations.Events.ANIMATION_COMPLETE, (anim: Phaser.Animations.Animation) => {
+                        if (!this.robot || anim.key !== 'robot-fly-transition') {
+                            return;
+                        }
+                        this.robot.play('robot-fly-sustain', true);
+                    });
+                } else {
+                    this.robot.play('robot-fly-sustain', true);
+                }
+                this.startExploringEffect();
+            }
         } else {
             this.robot.stop();
             this.robot.setTexture(textureMap[state]);
             const resetPosition = state === 'normal' || state === 'moving';
             this.stopExploringEffect(resetPosition);
+            this.applyProtectionTexture();
         }
         this.robot.setVisible(true);
     }
@@ -1212,5 +1381,122 @@ export class ExplorationScene extends Scene {
             dangerOverrides: config?.dangerOverrides,
             callbacks
         });
+    }
+
+    private emitDebugState(planetOverride?: Planet, protectionsOverride?: ProtectionState) {
+        const planet = planetOverride ?? this.currentPlanet;
+        if (!planet) {
+            return;
+        }
+        const knowledge = this.knowledge[planet.id];
+        const protections = protectionsOverride ?? this.computeProtectionState(planet);
+        const missions =
+            knowledge !== undefined
+                ? {
+                      failures: knowledge.failures,
+                      successes: knowledge.successes
+                  }
+                : undefined;
+
+        uiBus.emit('debug-state', {
+            generation: this.currentGeneration,
+            planetId: planet.id,
+            planetName: planet.name,
+            thresholds: knowledge,
+            protections: {
+                temperature: protections.temperature,
+                radiation: protections.radiation,
+                gravity: protections.gravity,
+                humidity: protections.humidity,
+                lifeProtocol: this.lifeProtocolActive
+            },
+            missions
+        });
+    }
+
+    private createProtectionIcons() {
+        if (!this.robot) {
+            return;
+        }
+        this.protectionIconTemp = this.add.image(this.robot.x, this.robot.y, 'robot-protect-thermal');
+        this.protectionIconTemp.setScale(0.35);
+        this.protectionIconTemp.setDepth(10);
+        this.protectionIconTemp.setVisible(false);
+
+        this.protectionIconRad = this.add.image(this.robot.x, this.robot.y, 'robot-protect-radiation');
+        this.protectionIconRad.setScale(0.35);
+        this.protectionIconRad.setDepth(10);
+        this.protectionIconRad.setVisible(false);
+    }
+
+    private updateProtectionIconsPosition() {
+        if (!this.robot) {
+            return;
+        }
+        const baseX = this.robot.x;
+        const baseY = this.robot.y;
+        if (this.protectionIconTemp) {
+            this.protectionIconTemp.setPosition(baseX - 42, baseY - 70);
+        }
+        if (this.protectionIconRad) {
+            this.protectionIconRad.setPosition(baseX + 42, baseY - 70);
+        }
+    }
+
+    private hideProtectionIcons() {
+        this.protectionIconTemp?.setVisible(false);
+        this.protectionIconRad?.setVisible(false);
+    }
+
+    private updateProtectionVisuals(_planet: Planet, protections: ProtectionState) {
+        this.lastProtections = protections;
+        this.protectionIconTemp?.setVisible(false);
+        this.protectionIconRad?.setVisible(false);
+        this.applyProtectionTexture();
+    }
+
+    private applyProtectionTexture() {
+        if (!this.robot || !this.currentPlanet) {
+            return;
+        }
+        // No alteramos el sprite de vuelo para planetas gaseosos ni estados especiales.
+        if (!this.currentPlanet.hasSurface) {
+            return;
+        }
+        if (this.robotState !== 'moving' && this.robotState !== 'normal') {
+            return;
+        }
+        const texture = this.resolveProtectionTexture(this.lastProtections);
+        if (texture) {
+            this.robot.setTexture(texture);
+        } else {
+            this.robot.setTexture(this.robotState === 'moving' ? 'robot-moving' : 'robot-normal');
+        }
+    }
+
+    private resolveProtectionTexture(protections: ProtectionState | null): string | null {
+        if (!protections) {
+            return null;
+        }
+        if (protections.radiation) {
+            return 'robot-protect-radiation';
+        }
+        if (protections.temperature) {
+            return 'robot-protect-thermal';
+        }
+        return null;
+    }
+
+    private updateFlyingTexture(isMoving: boolean) {
+        if (!this.robot || !this.isAerialExploration || !this.flyingInitialized || this.robotState !== 'exploring') {
+            return;
+        }
+        if (this.robot.anims.isPlaying && this.robot.anims.getName() === 'robot-fly-transition') {
+            return;
+        }
+        const target = isMoving ? 'robot-explore-5' : 'robot-explore-4';
+        if (this.robot.texture.key !== target) {
+            this.robot.setTexture(target);
+        }
     }
 }

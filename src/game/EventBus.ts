@@ -1,5 +1,6 @@
 import Phaser, { Events } from 'phaser';
-import { Planet, PlanetId } from './domain';
+import { Planet, PlanetId, PlanetKnowledge } from './domain';
+import { MissionReport } from './exploration/missionModel';
 
 type Listener<Payload> = (payload: Payload) => void;
 
@@ -56,6 +57,7 @@ export type UiEvents = {
     'generation-changed': number;
     'planet-changed': PlanetId;
     'log-line': string;
+    'mission-report': MissionReport;
     'start-mission': PlanetId;
     'robotinto-ready': void;
     'hud-update': {
@@ -66,6 +68,23 @@ export type UiEvents = {
     };
     'hud-visible': boolean;
     'hud-message': string;
+    'debug-state': {
+        generation: number;
+        planetId?: PlanetId;
+        planetName?: string;
+        thresholds?: PlanetKnowledge;
+        protections?: {
+            temperature: boolean;
+            radiation: boolean;
+            gravity: boolean;
+            humidity: boolean;
+            lifeProtocol: boolean;
+        };
+        missions?: {
+            failures: number;
+            successes: number;
+        };
+    };
 };
 
 export const navigationBus = new TypedEventBus<NavigationEvents>();

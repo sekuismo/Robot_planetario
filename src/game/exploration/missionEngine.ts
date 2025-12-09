@@ -1,4 +1,14 @@
 import { KnowledgeState, Planet } from '../domain';
+import {
+    MissionOutcome,
+    MissionProtectionDecisions,
+    MissionReport,
+    MissionThresholdsSnapshot,
+    addMissionReport,
+    getMissionHistory
+} from './missionModel';
+import { saveRobotMemory } from '../persistence/robotintoMemory';
+import { uiBus } from '../EventBus';
 
 export type RobotState = 'moving' | 'burn' | 'radiation' | 'broken' | 'shield' | 'normal' | 'exploring';
 
@@ -60,6 +70,12 @@ export function runMissionForPlanet(params: MissionParams): string[] {
     const narrative: string[] = [];
     const planetKnowledge = knowledge[planet.id];
     const isFirstAttempt = planetKnowledge.failures + planetKnowledge.successes === 0;
+    const thresholdsSnapshot: MissionThresholdsSnapshot = {
+        temperatureThreshold: planetKnowledge.temperatureThreshold,
+        radiationThreshold: planetKnowledge.radiationThreshold,
+        gravityThreshold: planetKnowledge.gravityThreshold,
+        humidityThreshold: planetKnowledge.humidityThreshold
+    };
 
     callbacks.log(`GEN ${generation} | PLANETA: ${planet.name}`);
     narrative.push(`GEN ${generation} | PLANETA: ${planet.name}`);
@@ -153,6 +169,13 @@ export function runMissionForPlanet(params: MissionParams): string[] {
         failureReason = 'inexperiencia';
     }
 
+    // En planetas gaseosos (sin superficie), garantizamos que la primera
+    // exploracion falle siempre para que Robotinto "aprenda" el entorno,
+    // incluso si por configuracion no se detectara un peligro clasico.
+    if (!planet.hasSurface && isFirstAttempt && !failureReason) {
+        failureReason = 'inexperiencia';
+    }
+
     if (failureReason) {
         planetKnowledge.failures += 1;
         if (failureReason === 'temperatura') {
@@ -206,6 +229,54 @@ export function runMissionForPlanet(params: MissionParams): string[] {
             `Aprendizaje almacenado: Temp>${planetKnowledge.temperatureThreshold}C | Rad>${planetKnowledge.radiationThreshold} | Grav>${planetKnowledge.gravityThreshold}g | Hum>${planetKnowledge.humidityThreshold}%`
         );
     }
+
+    const outcome: MissionOutcome = failureReason ? 'FAILURE' : 'SUCCESS';
+    const protectionsDecisions: MissionProtectionDecisions = {
+        temperature: protectTemp,
+        radiation: protectRad,
+        gravity: protectGrav,
+        humidity: protectHum,
+        lifeProtocol: planet.hasLife
+    };
+
+    let failureReasonText: string | undefined;
+    if (failureReason === 'temperatura') {
+        failureReasonText = 'Fallo por temperatura extrema sin protección térmica.';
+    } else if (failureReason === 'radiacion') {
+        failureReasonText = 'Fallo por radiación letal sin escudo anti-radiación.';
+    } else if (failureReason === 'gravedad') {
+        failureReasonText = 'Fallo por gravedad extrema sin adaptación gravitacional.';
+    } else if (failureReason === 'humedad') {
+        failureReasonText = 'Fallo por humedad crítica sin sellado antihumedad.';
+    } else if (failureReason === 'inexperiencia') {
+        failureReasonText = 'Fallo por falta de experiencia en la primera generación.';
+    }
+
+    const report: MissionReport = {
+        planetId: planet.id,
+        planetName: planet.name,
+        generation,
+        sensors: {
+            temperatureC: sensors.temperatureC,
+            gravityG: sensors.gravityG,
+            humidity: sensors.humidity,
+            radiation: sensors.radiation,
+            hasLife: planet.hasLife
+        },
+        protectionsDecisions,
+        outcome,
+        failureReason: failureReasonText,
+        thresholdsSnapshot
+    };
+
+    addMissionReport(report);
+
+    saveRobotMemory({
+        knowledgeByPlanet: knowledge,
+        missionHistory: getMissionHistory()
+    });
+
+    uiBus.emit('mission-report', report);
 
     return narrative;
 }
