@@ -15,6 +15,40 @@ export type MissionParams = {
     callbacks: MissionCallbacks;
 };
 
+type Classification = { label: string; note?: string };
+
+function classifyTemperature(tempC: number): Classification {
+    if (tempC >= 150) return { label: 'peligro extremo', note: 'riesgo para las ruedas' };
+    if (tempC >= 60) return { label: 'alta', note: 'recomendado activar proteccion termica' };
+    if (tempC >= 0) return { label: 'moderada', note: 'operable' };
+    return { label: 'baja', note: 'riesgo de congelamiento' };
+}
+
+function classifyRadiation(rad: number): Classification {
+    if (rad >= 90) return { label: 'letal', note: 'riesgo de destruccion de circuitos' };
+    if (rad >= 70) return { label: 'muy alta', note: 'activar escudo' };
+    if (rad >= 40) return { label: 'media', note: 'precaucion' };
+    return { label: 'baja' };
+}
+
+function classifyGravity(g: number): Classification {
+    if (g >= 2) return { label: 'muy alta', note: 'riesgo de aplastamiento' };
+    if (g >= 1.2) return { label: 'alta', note: 'ajuste de estabilizadores necesario' };
+    if (g >= 0.5) return { label: 'normal' };
+    return { label: 'muy baja', note: 'riesgo de perdida de traccion' };
+}
+
+function classifyHumidity(h: number): Classification {
+    if (h >= 90) return { label: 'critica', note: 'cortocircuitos inminentes' };
+    if (h >= 70) return { label: 'alta', note: 'sellado recomendado' };
+    if (h >= 30) return { label: 'moderada' };
+    return { label: 'baja', note: 'sin riesgos de corrosion' };
+}
+
+function clampThreshold(value: number, min = -200, max = 999): number {
+    return Math.max(min, Math.min(max, value));
+}
+
 export function runMissionForPlanet(params: MissionParams): string[] {
     const { planet, knowledge, generation, dangerOverrides, callbacks } = params;
     const sensors = {
@@ -27,18 +61,50 @@ export function runMissionForPlanet(params: MissionParams): string[] {
     const planetKnowledge = knowledge[planet.id];
     const isFirstAttempt = planetKnowledge.failures + planetKnowledge.successes === 0;
 
-    callbacks.log(`[Generacion ${generation}] Explorando ${planet.name}`);
+    callbacks.log(`GEN ${generation} | PLANETA: ${planet.name}`);
+    narrative.push(`GEN ${generation} | PLANETA: ${planet.name}`);
+
+    const tempClass = classifyTemperature(sensors.temperatureC);
+    const radClass = classifyRadiation(sensors.radiation);
+    const gravClass = classifyGravity(sensors.gravityG);
+    const humClass = classifyHumidity(sensors.humidity);
+
     callbacks.log(
-        `Sensores => Temp: ${sensors.temperatureC}C, Rad: ${sensors.radiation}, Grav: ${sensors.gravityG}g, Hum: ${sensors.humidity}`
+        `Sensores -> Temp: ${sensors.temperatureC}C (${tempClass.label}) | Rad: ${sensors.radiation} (${radClass.label}) | Grav: ${sensors.gravityG}g (${gravClass.label}) | Hum: ${sensors.humidity}% (${humClass.label})`
     );
-    narrative.push(`Gen ${generation} | ${planet.name}`);
     narrative.push(
-        `Lecturas -> Temp: ${sensors.temperatureC}C | Rad: ${sensors.radiation} | Grav: ${sensors.gravityG}g | Hum: ${sensors.humidity}%`
+        `Sensores -> Temp: ${sensors.temperatureC}C (${tempClass.label}) | Rad: ${sensors.radiation} (${radClass.label}) | Grav: ${sensors.gravityG}g (${gravClass.label}) | Hum: ${sensors.humidity}% (${humClass.label})`
     );
 
+    if (tempClass.note) {
+        callbacks.log(`Temperatura detectada: ${tempClass.note}`);
+        narrative.push(`Temperatura detectada: ${tempClass.note}`);
+    }
+    if (radClass.note) {
+        callbacks.log(`Radiacion: ${radClass.note}`);
+        narrative.push(`Radiacion: ${radClass.note}`);
+    }
+    if (gravClass.note) {
+        callbacks.log(`Gravedad: ${gravClass.note}`);
+        narrative.push(`Gravedad: ${gravClass.note}`);
+    }
+    if (humClass.note) {
+        callbacks.log(`Humedad: ${humClass.note}`);
+        narrative.push(`Humedad: ${humClass.note}`);
+    }
+
     if (!planet.hasSurface) {
-        callbacks.log('No hay superficie solida. Cambiando a exploracion en vuelo y sondas.');
+        callbacks.log('No hay superficie solida. Protocolo de exploracion en vuelo/sondas activado.');
         narrative.push('No hay superficie solida. Exploracion en vuelo/sondas, sin aterrizar.');
+    }
+
+    if (planet.hasLife) {
+        callbacks.log('Vida extraterrestre: DETECTADA - recomendacion: proceder con cautela.');
+        callbacks.log('Vida detectada. Cambiando a protocolo de exploracion pasiva.');
+        narrative.push('Vida extraterrestre detectada. Protocolo pasivo activado.');
+    } else {
+        callbacks.log('Vida extraterrestre: NO detectada.');
+        narrative.push('Vida extraterrestre: no detectada.');
     }
 
     const protectTemp = sensors.temperatureC > planetKnowledge.temperatureThreshold;
@@ -57,12 +123,12 @@ export function runMissionForPlanet(params: MissionParams): string[] {
     const logsForProtection = [
         protectTemp
             ? `Temperatura detectada ${sensors.temperatureC}C > umbral ${planetKnowledge.temperatureThreshold}C. Activando proteccion termica.`
-            : 'Temperatura dentro de rango seguro. No se activa proteccion termica.',
+            : 'Temperatura dentro de rango seguro. Ruedas sin proteccion especial.',
         protectRad
-            ? `Radiacion detectada ${sensors.radiation} > umbral ${planetKnowledge.radiationThreshold}. Activando escudo.`
+            ? `Radiacion detectada ${sensors.radiation} > umbral ${planetKnowledge.radiationThreshold}. Activando escudo anti-radiacion.`
             : 'Radiacion dentro de rango seguro. No se activa escudo.',
         protectGrav
-            ? `Gravedad detectada ${sensors.gravityG}g > umbral ${planetKnowledge.gravityThreshold}g. Ajustando estabilizadores.`
+            ? `Gravedad detectada ${sensors.gravityG}g > umbral ${planetKnowledge.gravityThreshold}g. Activando adaptacion gravitacional.`
             : 'Gravedad dentro de rango seguro. Sin ajuste de estabilizadores.',
         protectHum
             ? `Humedad detectada ${sensors.humidity} > umbral ${planetKnowledge.humidityThreshold}. Sellando compartimentos.`
@@ -90,26 +156,30 @@ export function runMissionForPlanet(params: MissionParams): string[] {
     if (failureReason) {
         planetKnowledge.failures += 1;
         if (failureReason === 'temperatura') {
-            planetKnowledge.temperatureThreshold = sensors.temperatureC - 10;
+            planetKnowledge.temperatureThreshold = clampThreshold(sensors.temperatureC - 10);
             callbacks.setRobotState('burn');
-            narrative.push('La temperatura excede el limite y las ruedas se dañan.');
+            callbacks.log('Temperatura extrema detectada. Ruedas sin proteccion. Las ruedas se derriten. MISION FALLIDA.');
+            narrative.push('Temperatura extrema detectada. Las ruedas se derriten. MISION FALLIDA.');
         } else if (failureReason === 'radiacion') {
-            planetKnowledge.radiationThreshold = sensors.radiation - 5;
+            planetKnowledge.radiationThreshold = clampThreshold(sensors.radiation - 5);
             callbacks.setRobotState('radiation');
-            narrative.push('La radiacion atraviesa los sistemas. Circuitos dañados.');
+            callbacks.log('Radiacion letal detectada. Sin proteccion activa. Circuitos destruidos. MISION FALLIDA.');
+            narrative.push('Radiacion letal sin escudo. Circuitos destruidos. MISION FALLIDA.');
         } else if (failureReason === 'gravedad') {
-            planetKnowledge.gravityThreshold = sensors.gravityG - 0.1;
+            planetKnowledge.gravityThreshold = clampThreshold(sensors.gravityG - 0.1);
             callbacks.setRobotState('broken');
-            narrative.push('La gravedad colapsa la estructura. Perdida de estabilidad.');
+            callbacks.log('Gravedad extrema sin adaptacion. Robotinto pierde estabilidad. MISION FALLIDA.');
+            narrative.push('Gravedad extrema sin adaptacion. Robotinto colapsa. MISION FALLIDA.');
         } else if (failureReason === 'humedad') {
-            planetKnowledge.humidityThreshold = sensors.humidity - 5;
+            planetKnowledge.humidityThreshold = clampThreshold(sensors.humidity - 5);
             callbacks.setRobotState('shield');
-            narrative.push('La humedad ahoga los sensores. Sistemas en modo de emergencia.');
+            callbacks.log('Humedad critica sin sellado. Se produce cortocircuito. MISION FALLIDA.');
+            narrative.push('Humedad critica sin sellado. Cortocircuito. MISION FALLIDA.');
         } else if (failureReason === 'inexperiencia') {
-            planetKnowledge.temperatureThreshold = Math.min(planetKnowledge.temperatureThreshold, sensors.temperatureC - 10);
-            planetKnowledge.radiationThreshold = Math.min(planetKnowledge.radiationThreshold, sensors.radiation - 5);
-            planetKnowledge.gravityThreshold = Math.min(planetKnowledge.gravityThreshold, sensors.gravityG - 0.1);
-            planetKnowledge.humidityThreshold = Math.min(planetKnowledge.humidityThreshold, sensors.humidity - 5);
+            planetKnowledge.temperatureThreshold = Math.min(planetKnowledge.temperatureThreshold, clampThreshold(sensors.temperatureC - 10));
+            planetKnowledge.radiationThreshold = Math.min(planetKnowledge.radiationThreshold, clampThreshold(sensors.radiation - 5));
+            planetKnowledge.gravityThreshold = Math.min(planetKnowledge.gravityThreshold, clampThreshold(sensors.gravityG - 0.1));
+            planetKnowledge.humidityThreshold = Math.min(planetKnowledge.humidityThreshold, clampThreshold(sensors.humidity - 5));
             callbacks.setRobotState('broken');
             callbacks.log('Primera incursion sin experiencia. Los sistemas fallan y se recalibran.');
             narrative.push('Falta de experiencia: los sistemas no reaccionan a tiempo. Falla registrada.');
@@ -122,11 +192,19 @@ export function runMissionForPlanet(params: MissionParams): string[] {
             callbacks.log(`Mision fallida por ${failureReason}. Ajustando umbral de ${failureReason} para la proxima generacion.`);
             narrative.push(`Mision fallida por ${failureReason}. Umbral actualizado para la siguiente generacion.`);
         }
+        callbacks.log(`Guardando experiencia de la Gen ${generation}...`);
+        narrative.push(
+            `Umbrales ahora -> Temp: ${planetKnowledge.temperatureThreshold}C | Rad: ${planetKnowledge.radiationThreshold} | Grav: ${planetKnowledge.gravityThreshold}g | Hum: ${planetKnowledge.humidityThreshold}%`
+        );
     } else {
         planetKnowledge.successes += 1;
         callbacks.log('Mision exitosa. Conocimiento reforzado.');
-        narrative.push('Exploracion completada sin daños. Conocimiento reforzado.');
+        narrative.push('Exploracion completada sin danos. Conocimiento reforzado.');
         callbacks.setRobotState('normal');
+        callbacks.log(`Guardando experiencia de la Gen ${generation}: umbrales se mantienen.`);
+        narrative.push(
+            `Aprendizaje almacenado: Temp>${planetKnowledge.temperatureThreshold}C | Rad>${planetKnowledge.radiationThreshold} | Grav>${planetKnowledge.gravityThreshold}g | Hum>${planetKnowledge.humidityThreshold}%`
+        );
     }
 
     return narrative;

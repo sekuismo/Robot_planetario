@@ -1,5 +1,5 @@
 import Phaser, { Scene } from 'phaser';
-import { EventBus } from '../EventBus';
+import { uiBus } from '../EventBus';
 import {
     PLANETS,
     Planet,
@@ -44,7 +44,7 @@ export class RobotintoScene extends Scene {
     private explorationPulseTween?: Phaser.Tweens.Tween;
     private log(message: string): void {
         console.log(message);
-        EventBus.emit('log-line', message);
+        uiBus.emit('log-line', message);
     }
 
     constructor() {
@@ -115,14 +115,14 @@ export class RobotintoScene extends Scene {
         this.createRpgMessageBox();
         this.registerAdvanceKey();
 
-        EventBus.emit('current-scene-ready', this);
-        EventBus.emit('robotinto-ready');
+        uiBus.emit('current-scene-ready', this);
+        uiBus.emit('robotinto-ready', undefined as void);
 
         const startHandler = (planetId: PlanetId) => this.startMission(planetId);
-        EventBus.on('start-mission', startHandler);
+        uiBus.on('start-mission', startHandler);
 
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-            EventBus.removeListener('start-mission', startHandler);
+            uiBus.removeListener('start-mission', startHandler);
             this.stopTravelAnimation();
             this.advanceKey?.destroy();
         });
@@ -338,9 +338,9 @@ export class RobotintoScene extends Scene {
         this.hideReturnButton();
         this.clearRpgMessages();
         this.currentGeneration += 1;
-        EventBus.emit('generation-changed', this.currentGeneration);
+        uiBus.emit('generation-changed', this.currentGeneration);
         this.currentPlanet = planet;
-        EventBus.emit('planet-changed', planet.id);
+        uiBus.emit('planet-changed', planet.id);
 
         const beginTravel = () => {
             const shouldFly = !planet.hasSurface; // Volando solo en planetas sin superficie/atmósfera

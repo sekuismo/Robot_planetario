@@ -1,17 +1,7 @@
 import Phaser, { Scene } from 'phaser';
-import { EventBus } from '../EventBus';
-import { PLANETS, Planet, PlanetId } from '../domain';
-
-const PLANET_SCENE_KEY: Record<PlanetId, string> = {
-    MERCURY: 'MercuryScene',
-    VENUS: 'VenusScene',
-    EARTH: 'EarthScene',
-    MARS: 'MarsScene',
-    JUPITER: 'JupiterScene',
-    SATURN: 'SaturnScene',
-    URANUS: 'UranusScene',
-    NEPTUNE: 'NeptuneScene'
-};
+import { navigationBus } from '../EventBus';
+import { Planet, PlanetId } from '../domain';
+import { PLANET_REGISTRY, REGISTERED_PLANETS } from '../planetRegistry';
 
 export class TravelScene extends Scene {
     private planetGridObjects: Array<Phaser.GameObjects.Image | Phaser.GameObjects.Text> = [];
@@ -27,29 +17,26 @@ export class TravelScene extends Scene {
     private awaitingExplorationStart = false;
     private isTraveling = false;
     private nextPlanet: Planet | null = null;
-    private currentPlanetSceneKey?: string;
 
     constructor() {
         super('TravelScene');
     }
 
+    private loadIfMissing(key: string, path: string) {
+        if (!this.textures.exists(key)) {
+            this.load.image(key, path);
+        }
+    }
+
     preload() {
-        this.load.image('main-bg', 'assets/main%20screen/no%20planets.png');
+        this.loadIfMissing('main-bg', 'assets/main screen/no planets.png');
+        this.loadIfMissing('travel-bg', 'assets/viaje/fondo_nave_nodriza.png');
+        this.loadIfMissing('mothership', 'assets/viaje/nave_nodriza.png');
+        this.loadIfMissing('mothership-thrust', 'assets/viaje/nave_nodriza_propulsion.png');
+        this.loadIfMissing('travel-star', 'assets/star.png');
+        this.loadIfMissing('loading-screen', 'assets/Back_loading.png');
 
-        this.load.image('planet-MERCURY', 'assets/main%20screen/planets/mercurio.png');
-        this.load.image('planet-VENUS', 'assets/main%20screen/planets/venus.png');
-        this.load.image('planet-EARTH', 'assets/main%20screen/planets/tierra.png');
-        this.load.image('planet-MARS', 'assets/main%20screen/planets/marte.png');
-        this.load.image('planet-JUPITER', 'assets/main%20screen/planets/jupiter.png');
-        this.load.image('planet-SATURN', 'assets/main%20screen/planets/saturno.png');
-        this.load.image('planet-URANUS', 'assets/main%20screen/planets/urano.png');
-        this.load.image('planet-NEPTUNE', 'assets/main%20screen/planets/neptuno.png');
-
-        this.load.image('travel-bg', 'assets/viaje/fondo_nave_nodriza.png');
-        this.load.image('mothership', 'assets/viaje/nave_nodriza.png');
-        this.load.image('mothership-thrust', 'assets/viaje/nave_nodriza_propulsion.png');
-        this.load.image('travel-star', 'assets/star.png');
-        this.load.image('loading-screen', 'assets/Back_loading.png');
+        REGISTERED_PLANETS.forEach(({ textureKeys, assets }) => this.loadIfMissing(textureKeys.icon, assets.icon));
     }
 
     create() {
@@ -64,11 +51,11 @@ export class TravelScene extends Scene {
         this.createExplorationStartButton();
         this.createPlanetGrid();
 
-        EventBus.emit('travel-ready', this);
-        EventBus.on('return-to-map', this.handleReturnToMap, this);
+        navigationBus.emit('map-ready', { sceneKey: this.scene.key });
+        navigationBus.on('return-to-map', this.handleReturnToMap, this);
 
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-            EventBus.removeListener('return-to-map', this.handleReturnToMap, this);
+            navigationBus.off('return-to-map', this.handleReturnToMap, this);
             this.stopTravelAnimation();
         });
     }
@@ -81,14 +68,19 @@ export class TravelScene extends Scene {
         const cellWidth = (this.scale.width - marginX * 2) / columns;
         const cellHeight = (this.scale.height - marginY * 2) / rows;
 
-        PLANETS.forEach((planet, index) => {
+        REGISTERED_PLANETS.forEach((planetDef, index) => {
             const col = index % columns;
             const row = Math.floor(index / columns);
             const x = marginX + cellWidth * (col + 0.5);
             const y = marginY + cellHeight * (row + 0.5);
-            const textureKey = `planet-${planet.id}`;
+            const textureKey = planetDef.textureKeys.icon;
 
-            const frame = this.textures.get(textureKey).getSourceImage();
+            const texture = this.textures.get(textureKey);
+            const frame = texture.getSourceImage();
+            if (!frame) {
+                console.warn(`Texture for ${textureKey} missing, skipping`);
+                return;
+            }
             const fitScale = Math.min(cellWidth / frame.width, cellHeight / frame.height);
             const baseScale = fitScale * 1.2;
             const hoverScale = baseScale * 1.05;
@@ -98,9 +90,9 @@ export class TravelScene extends Scene {
             icon.setInteractive({ useHandCursor: true });
             icon.on('pointerover', () => icon.setScale(hoverScale));
             icon.on('pointerout', () => icon.setScale(baseScale));
-            icon.on('pointerdown', () => this.startMission(planet.id));
+            icon.on('pointerdown', () => this.startMission(planetDef.planet.id));
 
-            const label = this.add.text(x, y + 100, planet.name, {
+            const label = this.add.text(x, y + 100, planetDef.planet.name, {
                 fontFamily: 'monospace',
                 fontSize: '20px',
                 color: '#b6ff9b'
@@ -114,7 +106,7 @@ export class TravelScene extends Scene {
         if (this.isTraveling || this.awaitingExplorationStart) {
             return;
         }
-        const planet = PLANETS.find((p) => p.id === planetId);
+        const planet = PLANET_REGISTRY[planetId]?.planet;
         if (!planet) {
             console.warn(`Planet with id ${planetId} not found.`);
             return;
@@ -208,47 +200,23 @@ export class TravelScene extends Scene {
 
         this.hideTravelLoading(() => {
             this.hideTravelScene(() => {
-                this.launchPlanetAndExploration(planet);
+                this.cameras.main.setAlpha(0);
+                this.cameras.main.setBackgroundColor('#000000');
+                navigationBus.emit('launch-exploration', { planetId: planet.id });
                 this.isTraveling = false;
             });
         });
     }
 
-    private launchPlanetAndExploration(planet: Planet) {
-        const planetSceneKey = PLANET_SCENE_KEY[planet.id];
-        const explorationKey = 'ExplorationScene';
-
-        if (this.currentPlanetSceneKey && this.currentPlanetSceneKey !== planetSceneKey && this.scene.isActive(this.currentPlanetSceneKey)) {
-            this.scene.stop(this.currentPlanetSceneKey);
-        }
-        this.currentPlanetSceneKey = planetSceneKey;
-
-        if (this.scene.isActive(planetSceneKey)) {
-            this.scene.stop(planetSceneKey);
-        }
-        this.scene.launch(planetSceneKey, { planetId: planet.id });
-
-        if (!this.scene.isActive(explorationKey)) {
-            this.scene.launch(explorationKey);
-        }
-
-        this.scene.bringToTop(planetSceneKey);
-        this.scene.bringToTop(explorationKey);
-
-        EventBus.emit('begin-exploration', { planet });
-    }
-
     private handleReturnToMap() {
-        if (this.currentPlanetSceneKey && this.scene.isActive(this.currentPlanetSceneKey)) {
-            this.scene.stop(this.currentPlanetSceneKey);
-        }
-
         this.stopTravelAnimation();
         this.hideTravelLoading();
         this.hideExplorationStartPrompt();
         this.awaitingExplorationStart = false;
         this.isTraveling = false;
         this.nextPlanet = null;
+        this.cameras.main.setAlpha(1);
+        this.cameras.main.setBackgroundColor('#000000');
 
         this.setGridVisible(true);
         this.scene.bringToTop();
@@ -410,6 +378,7 @@ export class TravelScene extends Scene {
         bg.setAlpha(0).setVisible(true).setAngle(0);
         stars?.setAlpha(0).setVisible(true);
         this.starEmitter?.start();
+        ship.setTexture('mothership');
         ship.setAlpha(0).setVisible(true);
         ship.setAngle(-5);
         const shipY = height * 0.55;
@@ -433,14 +402,9 @@ export class TravelScene extends Scene {
         });
 
         const beginBoost = () => {
-            ship.setVisible(false); // Evita ver dos naves: solo la versión con propulsión
-            thrust.setVisible(true);
-            this.tweens.add({
-                targets: thrust,
-                alpha: { from: 0, to: 1 },
-                duration: 180,
-                ease: 'Sine.easeInOut'
-            });
+            // Cambiamos la textura de la misma nave para no duplicar sprites ni crear parpadeo
+            ship.setTexture('mothership-thrust').setVisible(true).setAlpha(1);
+            thrust.setVisible(false);
 
             this.travelTween = this.tweens.add({
                 targets: ship,
@@ -470,7 +434,7 @@ export class TravelScene extends Scene {
                         return;
                     }
 
-                    const fadeOutTargets = stars ? [bg, stars, thrust, ship] : [bg, thrust, ship];
+                    const fadeOutTargets = stars ? [bg, stars, ship] : [bg, ship];
                     this.tweens.add({
                         targets: fadeOutTargets,
                         alpha: { from: 1, to: 0 },
@@ -509,9 +473,12 @@ export class TravelScene extends Scene {
         this.travelBg?.setVisible(false).setAlpha(0);
         this.starEmitter?.stop();
         this.travelStars?.setVisible(false).setAlpha(0);
-        this.mothership?.setVisible(false).setAlpha(0);
+        this.mothership?.setVisible(false).setAlpha(0).setTexture('mothership');
         this.mothershipThrust?.setVisible(false).setAlpha(0);
         this.travelLoadingScreen?.setVisible(false).setAlpha(0);
         this.travelLoadingText?.setVisible(false).setAlpha(0);
+        // Reinicia visibilidad por si se vuelve a disparar la animación
+        this.mothership?.setAlpha(0).setVisible(true).setTexture('mothership');
+        this.mothershipThrust?.setAlpha(0).setVisible(false);
     }
 }

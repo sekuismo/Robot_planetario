@@ -2,6 +2,7 @@ import type Phaser from 'phaser';
 import { useRef, useState } from 'react';
 import { IRefPhaserGame, PhaserGame } from './PhaserGame';
 import { LogPanel } from './components/LogPanel';
+import { HudOverlay } from './components/HudOverlay';
 
 function App() {
     const phaserRef = useRef<IRefPhaserGame | null>(null);
@@ -15,9 +16,7 @@ function App() {
 
     return (
         <div id="app">
-            <div className="ui">
-                <p>Escena base lista para Phaser + React.</p>
-            </div>
+            <HudOverlay />
             <div className="layout">
                 <div className="game-shell">
                     <PhaserGame ref={phaserRef} currentActiveScene={handleSceneReady} />

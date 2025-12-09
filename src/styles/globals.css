@@ -189,6 +189,95 @@ body {
     cursor: pointer;
 }
 
+.hud-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 12px 18px;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 15;
+}
+
+.hud-row {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    background: rgba(11, 33, 11, 0.9);
+    border: 1px solid #123712;
+    padding: 10px 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    font-family: "VT323", monospace;
+    color: #b6ff9b;
+}
+
+.hud-metric {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.hud-label {
+    font-size: 16px;
+    color: #9ef78a;
+}
+
+.hud-value {
+    font-size: 18px;
+}
+
+.hud-bar {
+    position: relative;
+    width: 240px;
+    height: 16px;
+    background: #335533;
+    border: 1px solid #123712;
+    overflow: hidden;
+}
+
+.hud-bar__fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, #6cff98, #4ad880);
+}
+
+.hud-params {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 16px;
+    flex: 1;
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.hud-message {
+    margin: 8px auto 0 auto;
+    width: 100%;
+    max-width: 1440px;
+    background: rgba(13, 47, 13, 0.9);
+    border: 1px solid #123712;
+    color: #b6ff9b;
+    font-family: "VT323", monospace;
+    padding: 8px 12px;
+    text-align: left;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.hud-logline {
+    margin-top: 4px;
+    font-family: monospace;
+    font-size: 15px;
+    color: #9ef78a;
+    opacity: 0.9;
+}
+
 .planet-selector {
     margin-bottom: 12px;
     text-align: left;

@@ -1,5 +1,5 @@
 import { Scene } from 'phaser';
-import { EventBus } from '../EventBus';
+import { navigationBus, uiBus } from '../EventBus';
 
 export class StartScene extends Scene {
     private loadingImage?: Phaser.GameObjects.Image;
@@ -9,9 +9,15 @@ export class StartScene extends Scene {
         super('StartScene');
     }
 
+    private loadIfMissing(key: string, path: string) {
+        if (!this.textures.exists(key)) {
+            this.load.image(key, path);
+        }
+    }
+
     preload() {
-        this.load.image('start-bg', 'assets/main_back.png');
-        this.load.image('loading-screen', 'assets/Back_loading.png');
+        this.loadIfMissing('start-bg', 'assets/main_back.png');
+        this.loadIfMissing('loading-screen', 'assets/Back_loading.png');
     }
 
     create() {
@@ -46,14 +52,7 @@ export class StartScene extends Scene {
         startButton.on('pointerdown', () => {
             startButton.disableInteractive();
             this.showLoading(() => {
-                EventBus.once('travel-ready', () => {
-                    this.scene.stop('StartScene');
-                    this.scene.bringToTop('TravelScene');
-                });
-
-                this.scene.launch('TravelScene');
-                this.scene.launch('ExplorationScene');
-                this.scene.bringToTop('TravelScene');
+                navigationBus.emit('start-requested', undefined as void);
             });
         });
 
@@ -66,7 +65,7 @@ export class StartScene extends Scene {
             repeat: -1
         });
 
-        EventBus.emit('current-scene-ready', this);
+        uiBus.emit('current-scene-ready', this);
     }
 
     private createLoadingOverlay() {

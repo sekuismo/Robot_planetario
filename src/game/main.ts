@@ -1,15 +1,5 @@
 import Phaser, { Game } from 'phaser';
-import { StartScene } from './scenes/StartScene';
-import { TravelScene } from './scenes/TravelScene';
-import { ExplorationScene } from './scenes/ExplorationScene';
-import { MercuryScene } from './scenes/planets/MercuryScene';
-import { VenusScene } from './scenes/planets/VenusScene';
-import { EarthScene } from './scenes/planets/EarthScene';
-import { MarsScene } from './scenes/planets/MarsScene';
-import { JupiterScene } from './scenes/planets/JupiterScene';
-import { SaturnScene } from './scenes/planets/SaturnScene';
-import { UranusScene } from './scenes/planets/UranusScene';
-import { NeptuneScene } from './scenes/planets/NeptuneScene';
+import { BootScene } from './scenes/BootScene';
 
 //  Find out more information about the Game Config at:
 //  https://newdocs.phaser.io/docs/3.70.0/Phaser.Types.Core.GameConfig
@@ -23,19 +13,7 @@ const config: Phaser.Types.Core.GameConfig = {
     },
     parent: 'game-container',
     backgroundColor: '#000000',
-    scene: [
-        StartScene,
-        TravelScene,
-        ExplorationScene,
-        MercuryScene,
-        VenusScene,
-        EarthScene,
-        MarsScene,
-        JupiterScene,
-        SaturnScene,
-        UranusScene,
-        NeptuneScene
-    ]
+    scene: [BootScene]
 };
 
 const StartGame = (parent: string) => {

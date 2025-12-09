@@ -9,6 +9,11 @@ export type PlanetProfile = {
     stepGoal?: number;
     customMission?: (params: MissionParams) => string[];
     buildExplorationPhase?: (planet: Planet) => { messages: string[]; stepGoal?: number };
+    collectionConfig?: {
+        enabled?: boolean;
+        sampleGoal?: number;
+        damagePerSecond?: number;
+    };
 };
 
 export type PlanetProfilesMap = Record<PlanetId, PlanetProfile>;
